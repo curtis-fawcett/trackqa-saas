@@ -1,0 +1,29 @@
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment variables
+.env
+.env.*
+
+# Local database
+dev.db
+*.db
+
+# Prisma generated
+generated/
+src/generated/
+
+# Python virtual environment
+.venv/
+backend/.venv/
+
+# IDE / Editor
+.idea/
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
