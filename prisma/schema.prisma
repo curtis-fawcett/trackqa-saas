@@ -9,7 +9,7 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -64,12 +64,34 @@ enum ActivityType {
   COMMENT_ADDED
 }
 
+enum TicketType {
+  BUG
+  FEATURE_REQUEST
+  IMPROVEMENT
+  TECHNICAL_DEBT
+  DOCUMENTATION
+  TASK
+}
+
+enum Severity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
 model Ticket {
   id          String         @id @default(cuid())
   title       String
-  description String?
+  description String?        @db.Text
   status      TicketStatus   @default(OPEN)
   priority    TicketPriority @default(MEDIUM)
+  type        TicketType     @default(BUG)
+  severity    Severity       @default(MEDIUM)
+  tags        String?
+  reproductionSteps String?  @db.Text
+  rootCause   String?        @db.Text
+  resolution  String?        @db.Text
   createdAt   DateTime       @default(now())
   updatedAt   DateTime       @updatedAt
 
