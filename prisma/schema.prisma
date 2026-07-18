@@ -18,6 +18,7 @@ model User {
   email     String   @unique
   password  String
   name      String?
+  role      String   @default("USER") // USER, ADMIN
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -27,7 +28,9 @@ model User {
   activities  TicketActivity[]
   memberships ProjectMember[]
 
-  assignedTickets Ticket[] @relation("TicketAssignee")
+  assignedTickets       Ticket[]              @relation("TicketAssignee")
+  organizationMemberships OrganizationMember[]
+  ownedOrganizations    Organization[]        @relation("OrganizationOwner")
 }
 
 model Project {
@@ -37,11 +40,43 @@ model Project {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  ownerId String
-  owner   User   @relation(fields: [ownerId], references: [id])
+  ownerId        String
+  owner          User           @relation(fields: [ownerId], references: [id])
+  organizationId String?
+  organization   Organization?  @relation(fields: [organizationId], references: [id])
 
   tickets Ticket[]
   members ProjectMember[]
+}
+
+model Organization {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  ownerId String
+  owner   User   @relation("OrganizationOwner", fields: [ownerId], references: [id])
+
+  members  OrganizationMember[]
+  projects Project[]
+}
+
+model OrganizationMember {
+  id        String   @id @default(cuid())
+  role      String   @default("MEMBER") // OWNER, ADMIN, MEMBER
+  createdAt DateTime @default(now())
+
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@index([organizationId])
+  @@index([userId])
 }
 
 enum TicketStatus {

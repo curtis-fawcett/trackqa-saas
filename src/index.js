@@ -61,6 +61,66 @@ function requireAuth(req, res, next) {
   }
 }
 
+// Alias for task spec compatibility
+const authenticateToken = requireAuth;
+
+async function requireAdmin(req, res, next) {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.userId },
+      select: { role: true },
+    });
+    if (!user || user.role !== "ADMIN") {
+      return res.status(403).json({ error: "forbidden: admin access required" });
+    }
+    next();
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+}
+
+async function requireOrgRole(minRole) {
+  // minRole: "MEMBER", "ADMIN", or "OWNER"
+  return async (req, res, next) => {
+    try {
+      const orgId = req.params.orgId;
+      if (!orgId) return res.status(400).json({ error: "orgId is required" });
+
+      const org = await prisma.organization.findUnique({
+        where: { id: orgId },
+        select: { ownerId: true },
+      });
+
+      if (!org) return res.status(404).json({ error: "organization not found" });
+
+      if (org.ownerId === req.user.userId) {
+        req.orgRole = "OWNER";
+        return next();
+      }
+
+      const member = await prisma.organizationMember.findUnique({
+        where: { organizationId_userId: { organizationId: orgId, userId: req.user.userId } },
+        select: { role: true },
+      });
+
+      if (!member) return res.status(404).json({ error: "organization not found" });
+
+      const roleHierarchy = { MEMBER: 1, ADMIN: 2, OWNER: 3 };
+      const requiredLevel = roleHierarchy[minRole] || 1;
+      const userLevel = roleHierarchy[member.role] || 1;
+
+      if (userLevel < requiredLevel) {
+        return res.status(403).json({ error: "forbidden" });
+      }
+
+      req.orgRole = member.role;
+      next();
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  };
+}
+
 async function logActivity({ ticketId, actorId, type, message }) {
   return prisma.ticketActivity.create({
     data: { ticketId, actorId, type, message },
@@ -200,6 +260,7 @@ app.get("/health/db", async (req, res) => {
 
 const TicketStatus = z.enum(["OPEN", "IN_PROGRESS", "RESOLVED", "CLOSED"]);
 const TicketPriority = z.enum(["LOW", "MEDIUM", "HIGH", "CRITICAL"]);
+const TicketType = z.enum(["BUG", "FEATURE_REQUEST", "IMPROVEMENT", "TECHNICAL_DEBT", "DOCUMENTATION", "TASK"]);
 
 const registerSchema = z.object({
   body: z.object({
@@ -224,6 +285,7 @@ const createProjectSchema = z.object({
   body: z.object({
     name: z.string().min(1),
     description: z.string().optional(),
+    organizationId: z.string().optional(),
   }),
   params: z.any(),
   query: z.any(),
@@ -237,11 +299,27 @@ const getProjectSchema = z.object({
   query: z.any(),
 });
 
+const updateProjectSchema = z.object({
+  body: z
+    .object({
+      name: z.string().min(1).optional(),
+      description: z.string().optional(),
+    })
+    .refine((v) => Object.keys(v).length > 0, {
+      message: "at least one field is required",
+    }),
+  params: z.object({
+    projectId: z.string().min(1),
+  }),
+  query: z.any(),
+});
+
 const createTicketSchema = z.object({
   body: z.object({
     title: z.string().min(1),
     description: z.string().optional(),
     priority: TicketPriority.optional(),
+    type: TicketType.optional(),
   }),
   params: z.object({
     projectId: z.string().min(1),
@@ -264,6 +342,7 @@ const updateTicketSchema = z.object({
       description: z.string().optional(),
       status: TicketStatus.optional(),
       priority: TicketPriority.optional(),
+      type: TicketType.optional(),
     })
     .refine((v) => Object.keys(v).length > 0, {
       message: "at least one field is required",
@@ -282,6 +361,7 @@ const listTicketsSchema = z.object({
   query: z.object({
     status: TicketStatus.optional(),
     priority: TicketPriority.optional(),
+    type: TicketType.optional(),
     q: z.string().optional(),
     sort: z.string().optional(),
     page: z.coerce.number().int().min(1).optional(),
@@ -359,12 +439,86 @@ const removeMemberSchema = z.object({
   query: z.any(),
 });
 
-const searchUsersSchema = z.object({
+const listUsersSchema = z.object({
   body: z.any(),
   params: z.any(),
   query: z.object({
-    q: z.string().min(1, "search query is required"),
+    q: z.string().optional(),
+    page: z.coerce.number().int().min(1).optional(),
+    pageSize: z.coerce.number().int().min(1).max(100).optional(),
   }),
+});
+
+const getUserSchema = z.object({
+  body: z.any(),
+  params: z.object({
+    userId: z.string().min(1),
+  }),
+  query: z.any(),
+});
+
+const updateUserSchema = z.object({
+  body: z
+    .object({
+      name: z.string().min(1).optional(),
+      email: z.string().email().optional(),
+      role: z.enum(["USER", "ADMIN"]).optional(),
+    })
+    .refine((v) => Object.keys(v).length > 0, {
+      message: "at least one field is required",
+    }),
+  params: z.object({
+    userId: z.string().min(1),
+  }),
+  query: z.any(),
+});
+
+const dashboardStatsSchema = z.object({
+  body: z.any(),
+  params: z.any(),
+  query: z.object({
+    projectId: z.string().optional(),
+  }),
+});
+
+const createOrgSchema = z.object({
+  body: z.object({
+    name: z.string().min(1),
+    description: z.string().optional(),
+  }),
+  params: z.any(),
+  query: z.any(),
+});
+
+const getOrgSchema = z.object({
+  body: z.any(),
+  params: z.object({
+    orgId: z.string().min(1),
+  }),
+  query: z.any(),
+});
+
+const updateOrgSchema = z.object({
+  body: z
+    .object({
+      name: z.string().min(1).optional(),
+      description: z.string().optional(),
+    })
+    .refine((v) => Object.keys(v).length > 0, {
+      message: "at least one field is required",
+    }),
+  params: z.object({
+    orgId: z.string().min(1),
+  }),
+  query: z.any(),
+});
+
+const listOrgMembersSchema = z.object({
+  body: z.any(),
+  params: z.object({
+    orgId: z.string().min(1),
+  }),
+  query: z.any(),
 });
 
 // -------------------- ROUTES --------------------
@@ -436,38 +590,39 @@ app.post("/auth/login", validate(loginSchema), async (req, res) => {
 app.get("/me", requireAuth, async (req, res) => {
   const user = await prisma.user.findUnique({
     where: { id: req.user.userId },
-    select: { id: true, email: true, name: true, createdAt: true },
+    select: { id: true, email: true, name: true, role: true, createdAt: true },
   });
 
   res.json(user);
 });
 
-// Search users
-app.get("/users", requireAuth, validate(searchUsersSchema), async (req, res) => {
-  try {
-    const { q } = req.validated.query;
-
-    const users = await prisma.user.findMany({
-      where: {
-        OR: [{ email: { contains: q } }, { name: { contains: q } }],
-      },
-      take: 10,
-      select: { id: true, email: true, name: true },
-    });
-
-    res.json(users);
-  } catch (err) {
-    res.status(500).json({ error: String(err) });
-  }
-});
+// ==================== PROJECT CRUD ====================
 
 // Create project
 app.post("/projects", requireAuth, validate(createProjectSchema), async (req, res) => {
   try {
-    const { name, description } = req.validated.body;
+    const { name, description, organizationId } = req.validated.body;
+
+    // If organizationId is provided, verify user is a member
+    if (organizationId) {
+      const org = await prisma.organization.findUnique({
+        where: { id: organizationId },
+        select: { ownerId: true },
+      });
+      if (!org) return res.status(400).json({ error: "organization not found" });
+
+      if (org.ownerId !== req.user.userId) {
+        const member = await prisma.organizationMember.findUnique({
+          where: { organizationId_userId: { organizationId, userId: req.user.userId } },
+        });
+        if (!member) {
+          return res.status(403).json({ error: "you must be a member of the organization" });
+        }
+      }
+    }
 
     const project = await prisma.project.create({
-      data: { name, description, ownerId: req.user.userId },
+      data: { name, description, organizationId, ownerId: req.user.userId },
     });
 
     res.status(201).json(project);
@@ -516,6 +671,50 @@ app.get(
   }
 );
 
+// Update project
+app.put(
+  "/projects/:projectId",
+  requireAuth,
+  validate(updateProjectSchema),
+  requireProjectRole("OWNER"),
+  async (req, res) => {
+    try {
+      const { projectId } = req.validated.params;
+      const { name, description } = req.validated.body;
+
+      const updated = await prisma.project.update({
+        where: { id: projectId },
+        data: { name, description },
+      });
+
+      res.json(updated);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  }
+);
+
+// Delete project (hard delete — only owner)
+app.delete(
+  "/projects/:projectId",
+  requireAuth,
+  validate(getProjectSchema),
+  requireProjectRole("OWNER"),
+  async (req, res) => {
+    try {
+      const { projectId } = req.validated.params;
+
+      await prisma.project.delete({ where: { id: projectId } });
+
+      res.json({ deleted: true });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  }
+);
+
+// ==================== TICKET CRUD ====================
+
 // Create ticket
 app.post(
   "/projects/:projectId/tickets",
@@ -525,13 +724,14 @@ app.post(
   async (req, res, next) => {
     try {
       const { projectId } = req.validated.params;
-      const { title, description, priority } = req.validated.body;
+      const { title, description, priority, type } = req.validated.body;
 
       const ticket = await prisma.ticket.create({
         data: {
           title,
           description,
           priority,
+          type,
           projectId,
           reporterId: req.user.userId,
         },
@@ -560,7 +760,7 @@ app.get(
   async (req, res) => {
     try {
       const { projectId } = req.validated.params;
-      const { status, priority, q, sort = "createdAt:desc", page = 1, pageSize = 20 } =
+      const { status, priority, type, q, sort = "createdAt:desc", page = 1, pageSize = 20 } =
         req.validated.query;
 
       const skip = (page - 1) * pageSize;
@@ -575,6 +775,7 @@ app.get(
         projectId,
         ...(status ? { status } : {}),
         ...(priority ? { priority } : {}),
+        ...(type ? { type } : {}),
         ...(q
           ? {
               OR: [{ title: { contains: q } }, { description: { contains: q } }],
@@ -641,16 +842,16 @@ app.patch(
   requireTicketRole("MEMBER"),
   async (req, res) => {
     const { ticketId } = req.validated.params;
-    const { title, description, status, priority } = req.validated.body;
+    const { title, description, status, priority, type } = req.validated.body;
 
     const before = await prisma.ticket.findUnique({
       where: { id: ticketId },
-      select: { title: true, description: true, status: true, priority: true },
+      select: { title: true, description: true, status: true, priority: true, type: true },
     });
 
     const updated = await prisma.ticket.update({
       where: { id: ticketId },
-      data: { title, description, status, priority },
+      data: { title, description, status, priority, type },
     });
 
     const changes = [];
@@ -659,6 +860,7 @@ app.patch(
     if (status && status !== before.status) changes.push(`status ${before.status} → ${status}`);
     if (priority && priority !== before.priority)
       changes.push(`priority ${before.priority} → ${priority}`);
+    if (type && type !== before.type) changes.push(`type ${before.type} → ${type}`);
 
     if (changes.length) {
       await logActivity({
@@ -899,6 +1101,394 @@ app.delete("/comments/:commentId", requireAuth, validate(deleteCommentSchema), a
     res.status(500).json({ error: String(err) });
   }
 });
+
+// ==================== USER MANAGEMENT (admin-only) ====================
+
+// List users (admin-only, paginated, searchable)
+app.get(
+  "/users",
+  requireAuth,
+  requireAdmin,
+  validate(listUsersSchema),
+  async (req, res) => {
+    try {
+      const { q, page = 1, pageSize = 20 } = req.validated.query;
+      const skip = (page - 1) * pageSize;
+
+      const where = q
+        ? {
+            OR: [
+              { email: { contains: q } },
+              { name: { contains: q } },
+            ],
+          }
+        : {};
+
+      const [total, users] = await Promise.all([
+        prisma.user.count({ where }),
+        prisma.user.findMany({
+          where,
+          select: { id: true, email: true, name: true, role: true, createdAt: true },
+          orderBy: { createdAt: "desc" },
+          skip,
+          take: pageSize,
+        }),
+      ]);
+
+      res.json({
+        page,
+        pageSize,
+        total,
+        totalPages: Math.ceil(total / pageSize),
+        users,
+      });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  }
+);
+
+// Get single user by ID
+app.get(
+  "/users/:userId",
+  requireAuth,
+  validate(getUserSchema),
+  async (req, res) => {
+    try {
+      const { userId } = req.validated.params;
+
+      // Users can view their own profile; admins can view anyone
+      if (req.user.userId !== userId) {
+        const currentUser = await prisma.user.findUnique({
+          where: { id: req.user.userId },
+          select: { role: true },
+        });
+        if (!currentUser || currentUser.role !== "ADMIN") {
+          return res.status(403).json({ error: "forbidden: admin access required" });
+        }
+      }
+
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { id: true, email: true, name: true, role: true, createdAt: true, updatedAt: true },
+      });
+
+      if (!user) return res.status(404).json({ error: "user not found" });
+
+      res.json(user);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  }
+);
+
+// Update user profile (admin or self)
+app.put(
+  "/users/:userId",
+  requireAuth,
+  validate(updateUserSchema),
+  async (req, res) => {
+    try {
+      const { userId } = req.validated.params;
+      const { name, email, role: newRole } = req.validated.body;
+
+      // Only admin can change roles; users can update their own name/email
+      const isSelf = req.user.userId === userId;
+      const currentUser = await prisma.user.findUnique({
+        where: { id: req.user.userId },
+        select: { role: true },
+      });
+
+      const isAdmin = currentUser?.role === "ADMIN";
+
+      if (!isSelf && !isAdmin) {
+        return res.status(403).json({ error: "forbidden" });
+      }
+
+      // Only admin can change role
+      if (newRole && !isAdmin) {
+        return res.status(403).json({ error: "forbidden: only admins can change roles" });
+      }
+
+      // Check email uniqueness if changing email
+      if (email) {
+        const existing = await prisma.user.findUnique({ where: { email } });
+        if (existing && existing.id !== userId) {
+          return res.status(409).json({ error: "email already in use" });
+        }
+      }
+
+      const updated = await prisma.user.update({
+        where: { id: userId },
+        data: { name, email, ...(isAdmin && newRole ? { role: newRole } : {}) },
+        select: { id: true, email: true, name: true, role: true, createdAt: true, updatedAt: true },
+      });
+
+      res.json(updated);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  }
+);
+
+// Delete/deactivate user (admin-only)
+app.delete(
+  "/users/:userId",
+  requireAuth,
+  requireAdmin,
+  validate(getUserSchema),
+  async (req, res) => {
+    try {
+      const { userId } = req.validated.params;
+
+      // Prevent self-deletion
+      if (userId === req.user.userId) {
+        return res.status(400).json({ error: "cannot delete your own account" });
+      }
+
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { id: true },
+      });
+
+      if (!user) return res.status(404).json({ error: "user not found" });
+
+      // Hard delete — cascading will handle related records
+      await prisma.user.delete({ where: { id: userId } });
+
+      res.json({ deleted: true });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  }
+);
+
+// ==================== DASHBOARD STATS ====================
+
+app.get(
+  "/dashboard/stats",
+  requireAuth,
+  validate(dashboardStatsSchema),
+  async (req, res) => {
+    try {
+      const { projectId } = req.validated.query;
+
+      // Build the where clause — only show tickets from projects the user belongs to
+      const userProjects = await prisma.project.findMany({
+        where: {
+          OR: [
+            { ownerId: req.user.userId },
+            { members: { some: { userId: req.user.userId } } },
+          ],
+        },
+        select: { id: true },
+      });
+
+      const userProjectIds = userProjects.map((p) => p.id);
+
+      // If projectId filter is provided, verify the user has access
+      if (projectId) {
+        if (!userProjectIds.includes(projectId)) {
+          return res.status(404).json({ error: "project not found" });
+        }
+      }
+
+      const ticketWhere = {
+        projectId: projectId
+          ? projectId
+          : { in: userProjectIds },
+      };
+
+      // Run all queries in parallel
+      const [
+        totalTickets,
+        ticketsByStatus,
+        ticketsByPriority,
+        ticketsByType,
+        myTickets,
+        recentActivity,
+      ] = await Promise.all([
+        prisma.ticket.count({ where: ticketWhere }),
+
+        // Tickets by status
+        prisma.ticket.groupBy({
+          by: ["status"],
+          where: ticketWhere,
+          _count: { id: true },
+        }),
+
+        // Tickets by priority
+        prisma.ticket.groupBy({
+          by: ["priority"],
+          where: ticketWhere,
+          _count: { id: true },
+        }),
+
+        // Tickets by type
+        prisma.ticket.groupBy({
+          by: ["type"],
+          where: ticketWhere,
+          _count: { id: true },
+        }),
+
+        // Tickets assigned to current user
+        prisma.ticket.count({
+          where: {
+            ...ticketWhere,
+            assigneeId: req.user.userId,
+          },
+        }),
+
+        // Recent activity
+        prisma.ticketActivity.findMany({
+          where: {
+            ticket: {
+              projectId: projectId
+                ? projectId
+                : { in: userProjectIds },
+            },
+          },
+          orderBy: { createdAt: "desc" },
+          take: 10,
+          include: {
+            actor: { select: { id: true, email: true, name: true } },
+            ticket: { select: { id: true, title: true, projectId: true } },
+          },
+        }),
+      ]);
+
+      // Format the response
+      const formatGrouped = (data, key) => {
+        const result = {};
+        data.forEach((item) => {
+          result[item[key]] = item._count.id;
+        });
+        return result;
+      };
+
+      res.json({
+        totalTickets,
+        ticketsByStatus: formatGrouped(ticketsByStatus, "status"),
+        ticketsByPriority: formatGrouped(ticketsByPriority, "priority"),
+        ticketsByType: formatGrouped(ticketsByType, "type"),
+        myTickets,
+        recentActivity,
+      });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  }
+);
+
+// ==================== ORGANIZATION CRUD ====================
+
+// Create organization
+app.post(
+  "/organizations",
+  requireAuth,
+  validate(createOrgSchema),
+  async (req, res) => {
+    try {
+      const { name, description } = req.validated.body;
+
+      const org = await prisma.organization.create({
+        data: {
+          name,
+          description,
+          ownerId: req.user.userId,
+        },
+      });
+
+      // Also add creator as an OWNER member
+      await prisma.organizationMember.create({
+        data: {
+          organizationId: org.id,
+          userId: req.user.userId,
+          role: "OWNER",
+        },
+      });
+
+      res.status(201).json(org);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  }
+);
+
+// Get organization details
+app.get(
+  "/organizations/:orgId",
+  requireAuth,
+  validate(getOrgSchema),
+  requireOrgRole("MEMBER"),
+  async (req, res) => {
+    try {
+      const { orgId } = req.validated.params;
+
+      const org = await prisma.organization.findUnique({
+        where: { id: orgId },
+        include: {
+          owner: { select: { id: true, email: true, name: true } },
+          _count: { select: { members: true, projects: true } },
+        },
+      });
+
+      if (!org) return res.status(404).json({ error: "organization not found" });
+
+      res.json(org);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  }
+);
+
+// Update organization
+app.put(
+  "/organizations/:orgId",
+  requireAuth,
+  validate(updateOrgSchema),
+  requireOrgRole("ADMIN"),
+  async (req, res) => {
+    try {
+      const { orgId } = req.validated.params;
+      const { name, description } = req.validated.body;
+
+      const updated = await prisma.organization.update({
+        where: { id: orgId },
+        data: { name, description },
+      });
+
+      res.json(updated);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  }
+);
+
+// List organization members
+app.get(
+  "/organizations/:orgId/members",
+  requireAuth,
+  validate(listOrgMembersSchema),
+  requireOrgRole("MEMBER"),
+  async (req, res) => {
+    try {
+      const { orgId } = req.validated.params;
+
+      const members = await prisma.organizationMember.findMany({
+        where: { organizationId: orgId },
+        orderBy: { createdAt: "asc" },
+        include: {
+          user: { select: { id: true, email: true, name: true } },
+        },
+      });
+
+      res.json(members);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  }
+);
 
 // -------------------- ERROR HANDLER --------------------
 
