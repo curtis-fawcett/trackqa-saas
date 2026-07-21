@@ -1,5 +1,6 @@
-import { useQuery } from '@tanstack/react-query';
-import { api, PLANS, STRIPE_LINKS, type BillingPlan } from '@/lib/api';
+import { useState } from 'react';
+import { useQuery, useMutation } from '@tanstack/react-query';
+import { api, PLANS, type BillingPlan } from '@/lib/api';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Loader2, Check } from 'lucide-react';
@@ -7,12 +8,15 @@ import { Loader2, Check } from 'lucide-react';
 function PlanCard({
   plan,
   current,
+  onUpgrade,
+  loading,
 }: {
   plan: BillingPlan;
   current: string;
   onUpgrade: (name: string) => void;
+  loading: boolean;
 }) {
-  const isCurrent = plan.name === current;
+  const isCurrent = plan.name.toLowerCase() === current.toLowerCase();
   const isFree = plan.name === 'Free';
 
   return (
@@ -64,16 +68,17 @@ function PlanCard({
             {plan.cta}
           </div>
         ) : (
-          <a
-            href={STRIPE_LINKS[plan.name] || '#'}
-            className={`block rounded-lg px-6 py-3 text-center text-sm font-semibold transition-colors ${
+          <button
+            onClick={() => onUpgrade(plan.name)}
+            disabled={loading}
+            className={`block w-full rounded-lg px-6 py-3 text-center text-sm font-semibold transition-colors ${
               plan.highlighted
                 ? 'bg-emerald-500 text-slate-950 hover:bg-emerald-400'
                 : 'border border-emerald-500/50 text-emerald-400 hover:bg-emerald-500/10'
             }`}
           >
-            {plan.cta}
-          </a>
+            {loading ? 'Redirecting...' : plan.cta}
+          </button>
         )}
       </CardContent>
     </Card>
@@ -81,11 +86,45 @@ function PlanCard({
 }
 
 export function Billing() {
-  const { data: _user, isLoading } = useQuery({
+  const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
+
+  const { data: user, isLoading } = useQuery({
     queryKey: ['me'],
     queryFn: api.getMe,
     staleTime: 5 * 60 * 1000,
   });
+
+  const { data: planData } = useQuery({
+    queryKey: ['billing-plan'],
+    queryFn: api.getPlan,
+    staleTime: 60 * 1000,
+  });
+
+  const checkoutMutation = useMutation({
+    mutationFn: (priceId: string) => api.createCheckoutSession(priceId),
+    onSuccess: (data) => {
+      window.location.href = data.url;
+    },
+    onError: () => {
+      setLoadingPlan(null);
+    },
+  });
+
+  const portalMutation = useMutation({
+    mutationFn: () => api.createPortalSession(),
+    onSuccess: (data) => {
+      window.location.href = data.url;
+    },
+  });
+
+  const handleUpgrade = (planName: string) => {
+    setLoadingPlan(planName);
+    // Price IDs are fetched dynamically from the server via /api/billing/plan response
+    // For now, we tell the backend which plan via a separate endpoint,
+    // but since we need priceId, we use a convention: "pro" → pro price, "enterprise" → enterprise price
+    const priceId = planName === 'Pro' ? 'pro' : 'enterprise';
+    checkoutMutation.mutate(priceId);
+  };
 
   if (isLoading) {
     return (
@@ -95,7 +134,7 @@ export function Billing() {
     );
   }
 
-  const currentPlan = 'Free'; // Default — will be replaced when plan field exists on user
+  const currentPlan = (planData?.plan || user?.plan || 'Free').charAt(0).toUpperCase() + (planData?.plan || user?.plan || 'free').slice(1);
 
   return (
     <div className="max-w-4xl space-y-8">
@@ -114,12 +153,21 @@ export function Billing() {
             You are currently on the <span className="font-semibold text-foreground">{currentPlan}</span> plan.
           </CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
           <p className="text-sm text-slate-400">
             {currentPlan === 'Free'
               ? 'You have access for up to 5 users and 3 projects. Upgrade to unlock unlimited projects, configurable workflows, and more.'
               : 'Manage your subscription through the Stripe customer portal.'}
           </p>
+          {currentPlan !== 'Free' && planData?.stripeCustomerId && (
+            <button
+              onClick={() => portalMutation.mutate()}
+              disabled={portalMutation.isPending}
+              className="inline-flex items-center rounded-lg border border-slate-700 px-4 py-2 text-sm font-medium text-slate-300 hover:border-slate-500 hover:text-white transition-colors"
+            >
+              {portalMutation.isPending ? 'Loading...' : 'Manage Subscription'}
+            </button>
+          )}
         </CardContent>
       </Card>
 
@@ -132,7 +180,8 @@ export function Billing() {
               key={plan.name}
               plan={plan}
               current={currentPlan}
-              onUpgrade={() => {}}
+              onUpgrade={handleUpgrade}
+              loading={loadingPlan === plan.name}
             />
           ))}
         </div>
@@ -140,7 +189,7 @@ export function Billing() {
 
       {/* Billing note */}
       <p className="text-sm text-slate-500 text-center">
-        All plans billed annually. 14-day free trial included on Pro and Enterprise.
+        All plans billed monthly. 14-day free trial included on Pro and Enterprise.
       </p>
     </div>
   );

@@ -13,6 +13,16 @@ import crypto from "crypto";
 import path from "path";
 import { fileURLToPath } from "url";
 
+import {
+  ensureStripeProducts,
+  getOrCreateCustomer,
+  createCheckoutSession,
+  createPortalSession,
+  planFromPriceId,
+  verifyWebhook,
+  stripe,
+} from "./stripe.js";
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -29,6 +39,17 @@ if (!process.env.JWT_SECRET) {
 // }
 
 const prisma = new PrismaClient();
+
+// --- AUTO-MIGRATION (adds new columns on startup for TimescaleDB) ---
+async function autoMigrate() {
+  try {
+    await prisma.$queryRawUnsafe(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "plan" TEXT DEFAULT 'free'`);
+  } catch (e) { /* column may already exist */ }
+  try {
+    await prisma.$queryRawUnsafe(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "stripeCustomerId" TEXT`);
+  } catch (e) { /* column may already exist */ }
+  console.log("[AutoMigrate] Schema up to date");
+}
 
 // -------------------- HELPERS / MIDDLEWARE --------------------
 
@@ -241,6 +262,68 @@ function requireTicketRole(minRole = "MEMBER") {
 
       req.ticket = ticket;
       req.projectRole = role;
+
+      next();
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  };
+}
+
+// --- Plan-based limits ---
+
+const PLAN_LIMITS = {
+  free: { maxProjects: 3, maxUsers: 5 },
+  pro: { maxProjects: Infinity, maxUsers: Infinity },
+  enterprise: { maxProjects: Infinity, maxUsers: Infinity },
+};
+
+async function checkPlanLimit(limitType) {
+  return async (req, res, next) => {
+    try {
+      const user = await prisma.user.findUnique({
+        where: { id: req.user.userId },
+        select: { plan: true },
+      });
+      const plan = user?.plan || "free";
+      const limits = PLAN_LIMITS[plan] || PLAN_LIMITS.free;
+
+      if (limitType === "projects") {
+        const count = await prisma.project.count({
+          where: { ownerId: req.user.userId },
+        });
+        if (count >= limits.maxProjects) {
+          return res.status(403).json({
+            error: "plan_limit_reached",
+            message: `Your ${plan} plan allows up to ${limits.maxProjects} project(s). Please upgrade to create more.`,
+            plan,
+            limit: limits.maxProjects,
+            current: count,
+          });
+        }
+      }
+
+      if (limitType === "members") {
+        const { projectId } = req.params;
+        const count = await prisma.projectMember.count({
+          where: { projectId },
+        });
+        const project = await prisma.project.findUnique({
+          where: { id: projectId },
+          select: { ownerId: true },
+        });
+        // Include owner in count
+        const totalUsers = count + (project ? 1 : 0);
+        if (totalUsers >= limits.maxUsers) {
+          return res.status(403).json({
+            error: "plan_limit_reached",
+            message: `Your ${plan} plan allows up to ${limits.maxUsers} user(s) per project. Please upgrade to add more.`,
+            plan,
+            limit: limits.maxUsers,
+            current: totalUsers,
+          });
+        }
+      }
 
       next();
     } catch (err) {
@@ -651,7 +734,7 @@ apiRouter.post("/auth/login", validate(loginSchema), async (req, res) => {
 apiRouter.get("/me", requireAuth, async (req, res) => {
   const user = await prisma.user.findUnique({
     where: { id: req.user.userId },
-    select: { id: true, email: true, name: true, role: true, emailVerified: true, createdAt: true },
+    select: { id: true, email: true, name: true, role: true, plan: true, stripeCustomerId: true, emailVerified: true, createdAt: true },
   });
 
   res.json(user);
@@ -775,7 +858,7 @@ apiRouter.post("/auth/reset-password", async (req, res) => {
 // ==================== PROJECT CRUD ====================
 
 // Create project
-apiRouter.post("/projects", requireAuth, requireEmailVerified, validate(createProjectSchema), async (req, res) => {
+apiRouter.post("/projects", requireAuth, requireEmailVerified, checkPlanLimit("projects"), validate(createProjectSchema), async (req, res) => {
   try {
     const { name, description, organizationId } = req.validated.body;
 
@@ -1244,6 +1327,7 @@ apiRouter.post(
   requireAuth,
   validate(addMemberSchema),
   requireProjectRole("OWNER"),
+  checkPlanLimit("members"),
   async (req, res) => {
     try {
       const { projectId } = req.validated.params;
@@ -2356,6 +2440,95 @@ apiRouter.put("/notifications/read-all", requireAuth, async (req, res) => {
   }
 });
 
+// -------------------- BILLING ENDPOINTS --------------------
+
+// GET /api/billing/plan — returns current user's plan
+apiRouter.get("/billing/plan", requireAuth, async (req, res) => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.userId },
+      select: { plan: true, stripeCustomerId: true },
+    });
+    res.json({ plan: user?.plan || "free", stripeCustomerId: user?.stripeCustomerId });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// POST /api/billing/create-checkout-session — creates Stripe checkout session
+apiRouter.post("/billing/create-checkout-session", requireAuth, async (req, res) => {
+  try {
+    let { priceId } = req.body;
+    if (!priceId) return res.status(400).json({ error: "priceId is required" });
+
+    // Map plan names to price IDs
+    if (priceId === "pro") priceId = process.env.STRIPE_PRO_PRICE_ID;
+    if (priceId === "enterprise") priceId = process.env.STRIPE_ENTERPRISE_PRICE_ID;
+
+    if (!priceId || priceId === "pro" || priceId === "enterprise") {
+      return res.status(400).json({ error: "Invalid plan — Stripe products may not be configured yet. Please try again." });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.userId },
+      select: { id: true, email: true, name: true, stripeCustomerId: true },
+    });
+
+    if (!user) return res.status(404).json({ error: "user not found" });
+
+    // Get or create Stripe customer
+    const customerId = await getOrCreateCustomer(user);
+
+    // Save stripeCustomerId if new
+    if (!user.stripeCustomerId) {
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { stripeCustomerId: customerId },
+      });
+    }
+
+    const appUrl = process.env.APP_URL || `https://${req.get("host")}`;
+
+    const session = await createCheckoutSession({
+      customerId,
+      priceId,
+      userId: user.id,
+      appUrl,
+    });
+
+    res.json({ url: session.url });
+  } catch (err) {
+    console.error("[Billing] Checkout error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// POST /api/billing/create-portal-session — creates Stripe customer portal
+apiRouter.post("/billing/create-portal-session", requireAuth, async (req, res) => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.userId },
+      select: { stripeCustomerId: true },
+    });
+
+    if (!user?.stripeCustomerId) {
+      return res.status(400).json({ error: "no Stripe customer found — please start a subscription first" });
+    }
+
+    const appUrl = process.env.APP_URL || `https://${req.get("host")}`;
+
+    const session = await createPortalSession({
+      customerId: user.stripeCustomerId,
+      appUrl,
+    });
+
+    res.json({ url: session.url });
+  } catch (err) {
+    console.error("[Billing] Portal error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 // -------------------- ERROR HANDLER --------------------
 
 // 404 handler for unmatched API routes
@@ -2364,6 +2537,92 @@ apiRouter.use((req, res) => {
 });
 
 app.use("/api", apiRouter);
+
+// ─── Stripe Webhook (raw body required — mounted directly on app) ───
+app.post("/api/billing/webhook", express.raw({ type: "application/json" }), async (req, res) => {
+  let event;
+  try {
+    const signature = req.headers["stripe-signature"];
+    event = verifyWebhook(req.body, signature);
+  } catch (err) {
+    console.error("[Webhook] Signature verification failed:", err.message);
+    return res.status(400).json({ error: "webhook signature verification failed" });
+  }
+
+  try {
+    switch (event.type) {
+      case "checkout.session.completed": {
+        const session = event.data.object;
+        const customerId = session.customer;
+        const subscriptionId = session.subscription;
+
+        // Get the price ID from the subscription
+        let priceId = null;
+        if (subscriptionId) {
+          const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+          priceId = subscription.items.data[0]?.price?.id;
+        } else if (session.line_items) {
+          const lineItems = await stripe.checkout.sessions.listLineItems(session.id, { limit: 1 });
+          priceId = lineItems.data[0]?.price?.id;
+        }
+
+        const plan = planFromPriceId(priceId);
+
+        // Find user by stripeCustomerId
+        const user = await prisma.user.findFirst({
+          where: { stripeCustomerId: customerId },
+        });
+
+        if (user) {
+          await prisma.user.update({
+            where: { id: user.id },
+            data: { plan },
+          });
+          console.log(`[Webhook] Upgraded user ${user.email} to plan: ${plan}`);
+        } else {
+          // Try metadata on subscription
+          const userIdFromMeta = session.metadata?.userId;
+          if (userIdFromMeta) {
+            await prisma.user.update({
+              where: { id: userIdFromMeta },
+              data: { plan, stripeCustomerId: customerId },
+            });
+            console.log(`[Webhook] Upgraded user ${userIdFromMeta} to plan: ${plan} (via metadata)`);
+          } else {
+            console.log(`[Webhook] No user found for customer: ${customerId}`);
+          }
+        }
+        break;
+      }
+
+      case "customer.subscription.deleted": {
+        const subscription = event.data.object;
+        const customerId = subscription.customer;
+
+        const user = await prisma.user.findFirst({
+          where: { stripeCustomerId: customerId },
+        });
+
+        if (user) {
+          await prisma.user.update({
+            where: { id: user.id },
+            data: { plan: "free" },
+          });
+          console.log(`[Webhook] Downgraded user ${user.email} to free (subscription cancelled)`);
+        }
+        break;
+      }
+
+      default:
+        console.log(`[Webhook] Unhandled event: ${event.type}`);
+    }
+
+    res.json({ received: true });
+  } catch (err) {
+    console.error("[Webhook] Handler error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
 
 app.use((err, req, res, next) => {
   console.error(err);
@@ -2402,6 +2661,14 @@ app.get("/{*path}", (req, res) => {
 // -------------------- START SERVER --------------------
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, "0.0.0.0", () => {
+app.listen(PORT, "0.0.0.0", async () => {
   console.log(`Server listening on http://0.0.0.0:${PORT}`);
+
+  // Auto-migrate DB schema
+  await autoMigrate();
+
+  // Ensure Stripe products exist (test mode)
+  if (process.env.STRIPE_SECRET_KEY) {
+    await ensureStripeProducts();
+  }
 });

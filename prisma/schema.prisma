@@ -19,6 +19,8 @@ model User {
   password          String
   name              String?
   role              String    @default("USER") // USER, ADMIN
+  plan              String    @default("free") // free, pro, enterprise
+  stripeCustomerId  String?
   emailVerified     Boolean   @default(false)
   passwordChangedAt DateTime?
   createdAt         DateTime  @default(now())

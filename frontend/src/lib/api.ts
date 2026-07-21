@@ -39,6 +39,8 @@ export interface User {
   name: string;
   emailVerified?: boolean;
   role?: string;
+  plan?: string;
+  stripeCustomerId?: string;
   createdAt: string;
 }
 
@@ -267,8 +269,15 @@ export interface BillingPlan {
 }
 
 export const STRIPE_LINKS: Record<string, string> = {
-  Pro: 'https://buy.stripe.com/3cIcN55on9WY0PvcP24ZG00',
-  Enterprise: 'https://buy.stripe.com/aFa9ATaIH3yA1zT8yM4ZG01',
+  Pro: '',
+  Enterprise: '',
+};
+
+// Price IDs are set by the server at startup; the frontend fetches plan info from /api/billing/plan.
+// These are the price IDs created by ensureStripeProducts() — update if changed.
+export const STRIPE_PRICE_IDS: Record<string, string> = {
+  Pro: 'price_pro_monthly',   // placeholder — actual IDs are fetched dynamically
+  Enterprise: 'price_enterprise_monthly',
 };
 
 export const PLANS: BillingPlan[] = [
@@ -496,5 +505,19 @@ export const api = {
     apiRequest<{ message: string }>('/auth/reset-password', {
       method: 'POST',
       body: JSON.stringify({ token, newPassword }),
+    }),
+
+  // ── Billing ──────────────────────────────────────────────
+  getPlan: () => apiRequest<{ plan: string; stripeCustomerId?: string | null }>('/billing/plan'),
+
+  createCheckoutSession: (priceId: string) =>
+    apiRequest<{ url: string }>('/billing/create-checkout-session', {
+      method: 'POST',
+      body: JSON.stringify({ priceId }),
+    }),
+
+  createPortalSession: () =>
+    apiRequest<{ url: string }>('/billing/create-portal-session', {
+      method: 'POST',
     }),
 };
