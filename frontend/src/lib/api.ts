@@ -254,6 +254,73 @@ export interface UnreadCount {
   count: number;
 }
 
+// ── Billing types ───────────────────────────────────────────
+
+export interface BillingPlan {
+  name: string;
+  price: string;
+  period: string;
+  description: string;
+  features: string[];
+  cta: string;
+  highlighted: boolean;
+}
+
+export const STRIPE_LINKS: Record<string, string> = {
+  Pro: 'https://buy.stripe.com/3cIcN55on9WY0PvcP24ZG00',
+  Enterprise: 'https://buy.stripe.com/aFa9ATaIH3yA1zT8yM4ZG01',
+};
+
+export const PLANS: BillingPlan[] = [
+  {
+    name: 'Free',
+    price: '$0',
+    period: 'forever',
+    description: 'Perfect for individuals and small teams getting started.',
+    features: [
+      'Up to 5 users',
+      '3 projects',
+      'Basic kanban board',
+      'Ticket comments & activity',
+      'Email support',
+    ],
+    cta: 'Get Started',
+    highlighted: false,
+  },
+  {
+    name: 'Pro',
+    price: '$12',
+    period: 'user/month',
+    description: 'For growing teams that need power and flexibility.',
+    features: [
+      'Unlimited projects',
+      'Unlimited users',
+      'Configurable workflows',
+      'File attachments',
+      'Custom statuses',
+      'Priority support',
+    ],
+    cta: 'Upgrade to Pro',
+    highlighted: true,
+  },
+  {
+    name: 'Enterprise',
+    price: '$20',
+    period: 'user/month',
+    description: 'For organizations that need security and control.',
+    features: [
+      'Everything in Pro',
+      'SAML SSO',
+      'Audit logs',
+      'Dedicated onboarding',
+      'SLA guarantees',
+      'Custom integrations',
+    ],
+    cta: 'Upgrade to Enterprise',
+    highlighted: false,
+  },
+];
+
 // ── API client ──────────────────────────────────────────────
 
 export const api = {

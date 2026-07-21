@@ -25,12 +25,14 @@ import {
   MessageSquare,
   UserPlus,
   ChevronRight,
+  CreditCard,
 } from 'lucide-react';
 
 const navItems = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/projects', label: 'Projects', icon: FolderKanban },
   { to: '/organization', label: 'Organization', icon: Building },
+  { to: '/settings/billing', label: 'Billing', icon: CreditCard },
   { to: '/settings', label: 'Settings', icon: Settings },
 ];
 

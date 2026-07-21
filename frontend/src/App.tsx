@@ -9,6 +9,7 @@ import { Projects } from '@/pages/Projects';
 import { ProjectDetail } from '@/pages/ProjectDetail';
 import { TicketDetail } from '@/pages/TicketDetail';
 import { Settings } from '@/pages/Settings';
+import { Billing } from '@/pages/Billing';
 import { OrgSettings } from '@/pages/OrgSettings';
 import { AcceptInvite } from '@/pages/AcceptInvite';
 import { Notifications } from '@/pages/Notifications';
@@ -51,6 +52,7 @@ export default function App() {
             <Route path="/projects/:id" element={<ProjectDetail />} />
             <Route path="/tickets/:id" element={<TicketDetail />} />
             <Route path="/settings" element={<Settings />} />
+            <Route path="/settings/billing" element={<Billing />} />
             <Route path="/organization" element={<OrgSettings />} />
             <Route path="/notifications" element={<Notifications />} />
           </Route>
