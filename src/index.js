@@ -278,7 +278,7 @@ const PLAN_LIMITS = {
   enterprise: { maxProjects: Infinity, maxUsers: Infinity },
 };
 
-async function checkPlanLimit(limitType) {
+function checkPlanLimit(limitType) {
   return async (req, res, next) => {
     try {
       const user = await prisma.user.findUnique({
