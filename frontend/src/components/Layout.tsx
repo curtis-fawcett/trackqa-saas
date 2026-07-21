@@ -11,11 +11,12 @@ import {
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
-import { LayoutDashboard, FolderKanban, Settings, LogOut, Bug } from 'lucide-react';
+import { LayoutDashboard, FolderKanban, Settings, LogOut, Bug, Building } from 'lucide-react';
 
 const navItems = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/projects', label: 'Projects', icon: FolderKanban },
+  { to: '/organization', label: 'Organization', icon: Building },
   { to: '/settings', label: 'Settings', icon: Settings },
 ];
 

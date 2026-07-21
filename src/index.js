@@ -9,6 +9,7 @@ import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import { z } from "zod";
+import crypto from "crypto";
 
 dotenv.config();
 
@@ -1489,6 +1490,472 @@ app.get(
     }
   }
 );
+
+// ==================== INVITES ====================
+
+// --- Zod schemas ---
+
+const createOrgInviteSchema = z.object({
+  body: z.object({
+    email: z.string().email(),
+    role: z.enum(["OWNER", "ADMIN", "MEMBER"]),
+  }),
+  params: z.object({
+    orgId: z.string().min(1),
+  }),
+  query: z.any(),
+});
+
+const createProjectInviteSchema = z.object({
+  body: z.object({
+    email: z.string().email(),
+    role: z.enum(["OWNER", "MEMBER"]),
+  }),
+  params: z.object({
+    projectId: z.string().min(1),
+  }),
+  query: z.any(),
+});
+
+const getInviteByTokenSchema = z.object({
+  body: z.any(),
+  params: z.object({
+    token: z.string().min(1),
+  }),
+  query: z.any(),
+});
+
+const listOrgInvitesSchema = z.object({
+  body: z.any(),
+  params: z.object({
+    orgId: z.string().min(1),
+  }),
+  query: z.any(),
+});
+
+const listProjectInvitesSchema = z.object({
+  body: z.any(),
+  params: z.object({
+    projectId: z.string().min(1),
+  }),
+  query: z.any(),
+});
+
+const cancelInviteSchema = z.object({
+  body: z.any(),
+  params: z.object({
+    id: z.string().min(1),
+  }),
+  query: z.any(),
+});
+
+// --- Helpers ---
+
+function generateToken() {
+  return crypto.randomBytes(32).toString("hex");
+}
+
+// --- Org Invites ---
+
+// POST /organizations/:orgId/invites – send invite by email with role (admin-only)
+app.post(
+  "/organizations/:orgId/invites",
+  requireAuth,
+  validate(createOrgInviteSchema),
+  requireOrgRole("ADMIN"),
+  async (req, res) => {
+    try {
+      const { orgId } = req.validated.params;
+      const { email, role } = req.validated.body;
+
+      // Check if user is already a member
+      const existingMember = await prisma.organizationMember.findFirst({
+        where: {
+          organizationId: orgId,
+          user: { email },
+        },
+      });
+
+      if (existingMember) {
+        return res.status(409).json({ error: "user is already a member of this organization" });
+      }
+
+      // Check for existing pending invite for the same email+org
+      const existingInvite = await prisma.invite.findFirst({
+        where: {
+          email,
+          organizationId: orgId,
+          status: "PENDING",
+        },
+      });
+
+      if (existingInvite) {
+        return res.status(409).json({ error: "a pending invite already exists for this email" });
+      }
+
+      const token = generateToken();
+
+      const invite = await prisma.invite.create({
+        data: {
+          email,
+          token,
+          role,
+          organizationId: orgId,
+          invitedById: req.user.userId,
+        },
+        include: {
+          invitedBy: { select: { id: true, email: true, name: true } },
+          organization: { select: { id: true, name: true } },
+        },
+      });
+
+      res.status(201).json(invite);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  }
+);
+
+// GET /organizations/:orgId/invites – list pending invites (admin-only)
+app.get(
+  "/organizations/:orgId/invites",
+  requireAuth,
+  validate(listOrgInvitesSchema),
+  requireOrgRole("ADMIN"),
+  async (req, res) => {
+    try {
+      const { orgId } = req.validated.params;
+
+      const invites = await prisma.invite.findMany({
+        where: {
+          organizationId: orgId,
+          status: "PENDING",
+        },
+        orderBy: { createdAt: "desc" },
+        include: {
+          invitedBy: { select: { id: true, email: true, name: true } },
+        },
+      });
+
+      res.json(invites);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  }
+);
+
+// --- Project Invites ---
+
+// POST /projects/:projectId/invites – send invite by email with role (owner-only)
+app.post(
+  "/projects/:projectId/invites",
+  requireAuth,
+  validate(createProjectInviteSchema),
+  requireProjectRole("OWNER"),
+  async (req, res) => {
+    try {
+      const { projectId } = req.validated.params;
+      const { email, role } = req.validated.body;
+
+      // Check if user is already a member
+      const existingMember = await prisma.projectMember.findFirst({
+        where: {
+          projectId,
+          user: { email },
+        },
+      });
+
+      // Also check if user is the owner
+      const project = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: { owner: { select: { email: true } } },
+      });
+
+      if (existingMember || project?.owner?.email === email) {
+        return res.status(409).json({ error: "user is already a member of this project" });
+      }
+
+      // Check for existing pending invite
+      const existingInvite = await prisma.invite.findFirst({
+        where: {
+          email,
+          projectId,
+          status: "PENDING",
+        },
+      });
+
+      if (existingInvite) {
+        return res.status(409).json({ error: "a pending invite already exists for this email" });
+      }
+
+      const token = generateToken();
+
+      const invite = await prisma.invite.create({
+        data: {
+          email,
+          token,
+          role,
+          projectId,
+          invitedById: req.user.userId,
+        },
+        include: {
+          invitedBy: { select: { id: true, email: true, name: true } },
+          project: { select: { id: true, name: true } },
+        },
+      });
+
+      res.status(201).json(invite);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  }
+);
+
+// GET /projects/:projectId/invites – list pending invites
+app.get(
+  "/projects/:projectId/invites",
+  requireAuth,
+  validate(listProjectInvitesSchema),
+  requireProjectRole("OWNER"),
+  async (req, res) => {
+    try {
+      const { projectId } = req.validated.params;
+
+      const invites = await prisma.invite.findMany({
+        where: {
+          projectId,
+          status: "PENDING",
+        },
+        orderBy: { createdAt: "desc" },
+        include: {
+          invitedBy: { select: { id: true, email: true, name: true } },
+        },
+      });
+
+      res.json(invites);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  }
+);
+
+// --- Shared invite endpoints ---
+
+// GET /invites/:token – look up invite by token (public – no auth, returns org/project name and role)
+app.get(
+  "/invites/:token",
+  validate(getInviteByTokenSchema),
+  async (req, res) => {
+    try {
+      const { token } = req.validated.params;
+
+      const invite = await prisma.invite.findUnique({
+        where: { token },
+        include: {
+          organization: { select: { id: true, name: true } },
+          project: { select: { id: true, name: true } },
+          invitedBy: { select: { id: true, email: true, name: true } },
+        },
+      });
+
+      if (!invite) {
+        return res.status(404).json({ error: "invite not found" });
+      }
+
+      if (invite.status !== "PENDING") {
+        return res.status(410).json({ error: `invite is ${invite.status.toLowerCase()}` });
+      }
+
+      res.json(invite);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  }
+);
+
+// POST /invites/:token/accept – accept invite (requires auth)
+app.post(
+  "/invites/:token/accept",
+  requireAuth,
+  validate(getInviteByTokenSchema),
+  async (req, res) => {
+    try {
+      const { token } = req.validated.params;
+
+      const invite = await prisma.invite.findUnique({
+        where: { token },
+      });
+
+      if (!invite) {
+        return res.status(404).json({ error: "invite not found" });
+      }
+
+      if (invite.status !== "PENDING") {
+        return res.status(410).json({ error: `invite is ${invite.status.toLowerCase()}` });
+      }
+
+      // Verify the authenticated user's email matches the invite
+      const user = await prisma.user.findUnique({
+        where: { id: req.user.userId },
+        select: { email: true },
+      });
+
+      if (!user || user.email !== invite.email) {
+        return res.status(403).json({
+          error: "this invite is for a different email address. Please log in with the invited email.",
+        });
+      }
+
+      // Accept: add member and mark invite
+      if (invite.organizationId) {
+        await prisma.organizationMember.upsert({
+          where: {
+            organizationId_userId: {
+              organizationId: invite.organizationId,
+              userId: req.user.userId,
+            },
+          },
+          update: { role: invite.role },
+          create: {
+            organizationId: invite.organizationId,
+            userId: req.user.userId,
+            role: invite.role,
+          },
+        });
+      }
+
+      if (invite.projectId) {
+        const projectRole = invite.role === "OWNER" ? "OWNER" : "MEMBER";
+        await prisma.projectMember.upsert({
+          where: {
+            projectId_userId: {
+              projectId: invite.projectId,
+              userId: req.user.userId,
+            },
+          },
+          update: { role: projectRole },
+          create: {
+            projectId: invite.projectId,
+            userId: req.user.userId,
+            role: projectRole,
+          },
+        });
+      }
+
+      const updated = await prisma.invite.update({
+        where: { id: invite.id },
+        data: { status: "ACCEPTED" },
+        include: {
+          organization: { select: { id: true, name: true } },
+          project: { select: { id: true, name: true } },
+        },
+      });
+
+      res.json(updated);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  }
+);
+
+// DELETE /invites/:id – cancel an invite (checks ownership by looking up invite)
+app.delete(
+  "/invites/:id",
+  requireAuth,
+  validate(cancelInviteSchema),
+  async (req, res) => {
+    try {
+      const { id } = req.validated.params;
+
+      const invite = await prisma.invite.findUnique({
+        where: { id },
+        select: {
+          id: true,
+          status: true,
+          organizationId: true,
+          projectId: true,
+        },
+      });
+
+      if (!invite) {
+        return res.status(404).json({ error: "invite not found" });
+      }
+
+      if (invite.status !== "PENDING") {
+        return res.status(400).json({ error: "only pending invites can be cancelled" });
+      }
+
+      // Check authorization: must be admin of the org or owner of the project
+      if (invite.organizationId) {
+        const org = await prisma.organization.findUnique({
+          where: { id: invite.organizationId },
+          select: { ownerId: true },
+        });
+
+        if (!org || org.ownerId !== req.user.userId) {
+          const member = await prisma.organizationMember.findUnique({
+            where: {
+              organizationId_userId: {
+                organizationId: invite.organizationId,
+                userId: req.user.userId,
+              },
+            },
+            select: { role: true },
+          });
+
+          if (!member || (member.role !== "ADMIN" && member.role !== "OWNER")) {
+            return res.status(403).json({ error: "forbidden" });
+          }
+        }
+      } else if (invite.projectId) {
+        const role = await getProjectRole(invite.projectId, req.user.userId);
+        if (role !== "OWNER") {
+          return res.status(403).json({ error: "forbidden" });
+        }
+      } else {
+        return res.status(400).json({ error: "invalid invite" });
+      }
+
+      const updated = await prisma.invite.update({
+        where: { id },
+        data: { status: "CANCELLED" },
+      });
+
+      res.json(updated);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  }
+);
+
+// GET /invites/pending – list pending invites for the authenticated user (by email)
+app.get("/invites/pending", requireAuth, async (req, res) => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.userId },
+      select: { email: true },
+    });
+
+    if (!user) return res.status(404).json({ error: "user not found" });
+
+    const invites = await prisma.invite.findMany({
+      where: {
+        email: user.email,
+        status: "PENDING",
+      },
+      orderBy: { createdAt: "desc" },
+      include: {
+        organization: { select: { id: true, name: true } },
+        project: { select: { id: true, name: true } },
+        invitedBy: { select: { id: true, email: true, name: true } },
+      },
+    });
+
+    res.json(invites);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
 
 // -------------------- ERROR HANDLER --------------------
 

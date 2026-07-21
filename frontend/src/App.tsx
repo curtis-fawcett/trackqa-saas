@@ -9,6 +9,8 @@ import { Projects } from '@/pages/Projects';
 import { ProjectDetail } from '@/pages/ProjectDetail';
 import { TicketDetail } from '@/pages/TicketDetail';
 import { Settings } from '@/pages/Settings';
+import { OrgSettings } from '@/pages/OrgSettings';
+import { AcceptInvite } from '@/pages/AcceptInvite';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -27,6 +29,7 @@ export default function App() {
           {/* Public routes */}
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
+          <Route path="/invite/:token" element={<AcceptInvite />} />
 
           {/* Protected routes */}
           <Route
@@ -41,6 +44,7 @@ export default function App() {
             <Route path="/projects/:id" element={<ProjectDetail />} />
             <Route path="/tickets/:id" element={<TicketDetail />} />
             <Route path="/settings" element={<Settings />} />
+            <Route path="/organization" element={<OrgSettings />} />
           </Route>
 
           {/* Catch-all: redirect to dashboard */}

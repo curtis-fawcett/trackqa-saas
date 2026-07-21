@@ -176,6 +176,39 @@ export interface ActivityEntry {
   };
 }
 
+// ── Invite types ──────────────────────────────────────────
+
+export type InviteRole = 'OWNER' | 'ADMIN' | 'MEMBER' | 'VIEWER';
+
+export interface Invite {
+  id: string;
+  email: string;
+  token: string;
+  role: InviteRole;
+  status: 'PENDING' | 'ACCEPTED' | 'DECLINED' | 'CANCELLED';
+  organizationId?: string;
+  projectId?: string;
+  createdAt: string;
+  updatedAt: string;
+  organization?: { id: string; name: string };
+  project?: { id: string; name: string };
+  invitedBy: { id: string; email: string; name: string | null };
+}
+
+export interface OrgMember {
+  id: string;
+  role: string;
+  createdAt: string;
+  user: { id: string; email: string; name: string | null };
+}
+
+export interface ProjectMember {
+  id: string;
+  role: string;
+  createdAt: string;
+  user: { id: string; email: string; name: string | null };
+}
+
 // ── API client ──────────────────────────────────────────────
 
 export const api = {
@@ -268,4 +301,45 @@ export const api = {
   // Organizations
   getOrganizations: () =>
     apiRequest<Array<{ id: string; name: string; description?: string; createdAt: string }>>('/organizations'),
+
+  getOrganization: (id: string) =>
+    apiRequest<{ id: string; name: string; description?: string; createdAt: string; owner: { id: string; email: string; name: string | null }; _count: { members: number; projects: number } }>(`/organizations/${id}`),
+
+  getOrgMembers: (orgId: string) =>
+    apiRequest<OrgMember[]>(`/organizations/${orgId}/members`),
+
+  // Invites – Organization
+  createOrgInvite: (orgId: string, data: { email: string; role: string }) =>
+    apiRequest<Invite>(`/organizations/${orgId}/invites`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  getOrgInvites: (orgId: string) =>
+    apiRequest<Invite[]>(`/organizations/${orgId}/invites`),
+
+  // Invites – Project
+  createProjectInvite: (projectId: string, data: { email: string; role: string }) =>
+    apiRequest<Invite>(`/projects/${projectId}/invites`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  getProjectInvites: (projectId: string) =>
+    apiRequest<Invite[]>(`/projects/${projectId}/invites`),
+
+  getProjectMembers: (projectId: string) =>
+    apiRequest<ProjectMember[]>(`/projects/${projectId}/members`),
+
+  // Invites – Shared
+  getInvite: (token: string) => apiRequest<Invite>(`/invites/${token}`),
+
+  acceptInvite: (token: string) =>
+    apiRequest<Invite>(`/invites/${token}/accept`, { method: 'POST' }),
+
+  cancelInvite: (inviteId: string) =>
+    apiRequest<Invite>(`/invites/${inviteId}`, { method: 'DELETE' }),
+
+  getPendingInvites: () =>
+    apiRequest<Invite[]>('/invites/pending'),
 };

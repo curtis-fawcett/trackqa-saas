@@ -31,6 +31,7 @@ model User {
   assignedTickets       Ticket[]              @relation("TicketAssignee")
   organizationMemberships OrganizationMember[]
   ownedOrganizations    Organization[]        @relation("OrganizationOwner")
+  invitesSent           Invite[]              @relation("InvitedBy")
 }
 
 model Project {
@@ -47,6 +48,7 @@ model Project {
 
   tickets Ticket[]
   members ProjectMember[]
+  invites Invite[]
 }
 
 model Organization {
@@ -61,6 +63,7 @@ model Organization {
 
   members  OrganizationMember[]
   projects Project[]
+  invites  Invite[]
 }
 
 model OrganizationMember {
@@ -193,4 +196,25 @@ model ProjectMember {
   @@unique([projectId, userId])
   @@index([projectId])
   @@index([userId])
+}
+
+model Invite {
+  id             String       @id @default(uuid())
+  email          String
+  token          String       @unique
+  role           String       // OWNER, ADMIN, MEMBER, VIEWER
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id])
+  projectId      String?
+  project        Project?     @relation(fields: [projectId], references: [id])
+  invitedById    String
+  invitedBy      User         @relation("InvitedBy", fields: [invitedById], references: [id])
+  status         String       @default("PENDING") // PENDING, ACCEPTED, DECLINED, CANCELLED
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([token])
+  @@index([organizationId])
+  @@index([projectId])
+  @@index([email])
 }
