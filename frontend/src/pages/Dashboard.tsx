@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -7,7 +7,6 @@ import { Button } from '@/components/ui/button';
 import { AlertCircle, CheckCircle2, Clock, Inbox, Loader2, Mail, RefreshCw } from 'lucide-react';
 
 export function Dashboard() {
-  const queryClient = useQueryClient();
   const { data: user, isLoading: userLoading } = useQuery({
     queryKey: ['me'],
     queryFn: api.getMe,

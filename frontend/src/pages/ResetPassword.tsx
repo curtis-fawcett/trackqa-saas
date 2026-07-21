@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
-import { Bug, Loader2, CheckCircle, XCircle, Lock } from 'lucide-react';
+import { Loader2, CheckCircle, XCircle, Lock } from 'lucide-react';
 
 export function ResetPassword() {
   const [searchParams] = useSearchParams();

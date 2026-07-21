@@ -7,7 +7,6 @@ import { Loader2, Check } from 'lucide-react';
 function PlanCard({
   plan,
   current,
-  onUpgrade,
 }: {
   plan: BillingPlan;
   current: string;
@@ -82,7 +81,7 @@ function PlanCard({
 }
 
 export function Billing() {
-  const { data: user, isLoading } = useQuery({
+  const { data: _user, isLoading } = useQuery({
     queryKey: ['me'],
     queryFn: api.getMe,
     staleTime: 5 * 60 * 1000,

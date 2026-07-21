@@ -10,6 +10,11 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import { z } from "zod";
 import crypto from "crypto";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 dotenv.config();
 
@@ -95,7 +100,7 @@ async function requireEmailVerified(req, res, next) {
   }
 }
 
-async function requireOrgRole(minRole) {
+function requireOrgRole(minRole) {
   // minRole: "MEMBER", "ADMIN", or "OWNER"
   return async (req, res, next) => {
     try {
@@ -247,6 +252,7 @@ function requireTicketRole(minRole = "MEMBER") {
 // -------------------- APP SETUP --------------------
 
 const app = express();
+const apiRouter = express.Router();
 
 app.use(helmet());
 app.use(express.json());
@@ -285,11 +291,11 @@ app.use(
 
 // -------------------- BASIC ROUTES --------------------
 
-app.get("/", (req, res) => {
+apiRouter.get("/", (req, res) => {
   res.send("TrackQA API is running ✅");
 });
 
-app.get("/health/db", async (req, res) => {
+apiRouter.get("/health/db", async (req, res) => {
   try {
     await prisma.$queryRaw`SELECT 1`;
     res.json({ ok: true, db: "connected" });
@@ -566,7 +572,7 @@ const listOrgMembersSchema = z.object({
 // -------------------- ROUTES --------------------
 
 // Activity
-app.get(
+apiRouter.get(
   "/tickets/:ticketId/activity",
   requireAuth,
   validate(listActivitySchema),
@@ -587,7 +593,7 @@ app.get(
 );
 
 // Register
-app.post("/auth/register", validate(registerSchema), async (req, res) => {
+apiRouter.post("/auth/register", validate(registerSchema), async (req, res) => {
   try {
     const { email, password, name } = req.validated.body;
 
@@ -619,7 +625,7 @@ app.post("/auth/register", validate(registerSchema), async (req, res) => {
 });
 
 // Login
-app.post("/auth/login", validate(loginSchema), async (req, res) => {
+apiRouter.post("/auth/login", validate(loginSchema), async (req, res) => {
   try {
     const { email, password } = req.validated.body;
 
@@ -642,7 +648,7 @@ app.post("/auth/login", validate(loginSchema), async (req, res) => {
 });
 
 // Me
-app.get("/me", requireAuth, async (req, res) => {
+apiRouter.get("/me", requireAuth, async (req, res) => {
   const user = await prisma.user.findUnique({
     where: { id: req.user.userId },
     select: { id: true, email: true, name: true, role: true, emailVerified: true, createdAt: true },
@@ -654,7 +660,7 @@ app.get("/me", requireAuth, async (req, res) => {
 // ==================== EMAIL VERIFICATION & PASSWORD RESET ====================
 
 // Verify email
-app.post("/auth/verify-email", async (req, res) => {
+apiRouter.post("/auth/verify-email", async (req, res) => {
   try {
     const { token } = req.body;
     if (!token) return res.status(400).json({ error: "token is required" });
@@ -679,7 +685,7 @@ app.post("/auth/verify-email", async (req, res) => {
 });
 
 // Resend verification token (requires auth)
-app.post("/auth/resend-verification", requireAuth, async (req, res) => {
+apiRouter.post("/auth/resend-verification", requireAuth, async (req, res) => {
   try {
     // Delete old EMAIL_VERIFY tokens for this user
     await prisma.verificationToken.deleteMany({
@@ -703,7 +709,7 @@ app.post("/auth/resend-verification", requireAuth, async (req, res) => {
 });
 
 // Forgot password
-app.post("/auth/forgot-password", async (req, res) => {
+apiRouter.post("/auth/forgot-password", async (req, res) => {
   try {
     const { email } = req.body;
     if (!email) {
@@ -739,7 +745,7 @@ app.post("/auth/forgot-password", async (req, res) => {
 });
 
 // Reset password
-app.post("/auth/reset-password", async (req, res) => {
+apiRouter.post("/auth/reset-password", async (req, res) => {
   try {
     const { token, newPassword } = req.body;
     if (!token || !newPassword) return res.status(400).json({ error: "token and newPassword are required" });
@@ -769,7 +775,7 @@ app.post("/auth/reset-password", async (req, res) => {
 // ==================== PROJECT CRUD ====================
 
 // Create project
-app.post("/projects", requireAuth, requireEmailVerified, validate(createProjectSchema), async (req, res) => {
+apiRouter.post("/projects", requireAuth, requireEmailVerified, validate(createProjectSchema), async (req, res) => {
   try {
     const { name, description, organizationId } = req.validated.body;
 
@@ -802,7 +808,7 @@ app.post("/projects", requireAuth, requireEmailVerified, validate(createProjectS
 });
 
 // List my projects
-app.get("/projects", requireAuth, async (req, res) => {
+apiRouter.get("/projects", requireAuth, async (req, res) => {
   const projects = await prisma.project.findMany({
     where: {
       OR: [{ ownerId: req.user.userId }, { members: { some: { userId: req.user.userId } } }],
@@ -814,7 +820,7 @@ app.get("/projects", requireAuth, async (req, res) => {
 });
 
 // Get one project (details)
-app.get(
+apiRouter.get(
   "/projects/:projectId",
   requireAuth,
   validate(getProjectSchema),
@@ -842,7 +848,7 @@ app.get(
 );
 
 // Update project
-app.put(
+apiRouter.put(
   "/projects/:projectId",
   requireAuth,
   validate(updateProjectSchema),
@@ -865,7 +871,7 @@ app.put(
 );
 
 // Delete project (hard delete — only owner)
-app.delete(
+apiRouter.delete(
   "/projects/:projectId",
   requireAuth,
   validate(getProjectSchema),
@@ -886,7 +892,7 @@ app.delete(
 // ==================== TICKET CRUD ====================
 
 // Create ticket
-app.post(
+apiRouter.post(
   "/projects/:projectId/tickets",
   requireAuth,
   requireEmailVerified,
@@ -923,7 +929,7 @@ app.post(
 );
 
 // List tickets
-app.get(
+apiRouter.get(
   "/projects/:projectId/tickets",
   requireAuth,
   validate(listTicketsSchema),
@@ -978,7 +984,7 @@ app.get(
 );
 
 // Get one ticket (details)
-app.get(
+apiRouter.get(
   "/tickets/:ticketId",
   requireAuth,
   validate(getTicketSchema),
@@ -1006,7 +1012,7 @@ app.get(
 );
 
 // Update ticket
-app.patch(
+apiRouter.patch(
   "/tickets/:ticketId",
   requireAuth,
   validate(updateTicketSchema),
@@ -1065,14 +1071,14 @@ app.patch(
 );
 
 // Delete ticket
-app.delete("/tickets/:ticketId", requireAuth, requireTicketRole("OWNER"), async (req, res) => {
+apiRouter.delete("/tickets/:ticketId", requireAuth, requireTicketRole("OWNER"), async (req, res) => {
   const { ticketId } = req.params;
   await prisma.ticket.delete({ where: { id: ticketId } });
   res.json({ deleted: true });
 });
 
 // Create comment
-app.post(
+apiRouter.post(
   "/tickets/:ticketId/comments",
   requireAuth,
   validate(createCommentSchema),
@@ -1141,7 +1147,7 @@ app.post(
 );
 
 // List comments
-app.get(
+apiRouter.get(
   "/tickets/:ticketId/comments",
   requireAuth,
   validate(listCommentsSchema),
@@ -1166,7 +1172,7 @@ app.get(
 );
 
 // Assign/unassign
-app.patch(
+apiRouter.patch(
   "/tickets/:ticketId/assign",
   requireAuth,
   validate(assignTicketSchema),
@@ -1233,7 +1239,7 @@ app.patch(
 );
 
 // Add member (owner)
-app.post(
+apiRouter.post(
   "/projects/:projectId/members",
   requireAuth,
   validate(addMemberSchema),
@@ -1260,7 +1266,7 @@ app.post(
 );
 
 // List members (owner or member)
-app.get("/projects/:projectId/members", requireAuth, validate(listMembersSchema), async (req, res) => {
+apiRouter.get("/projects/:projectId/members", requireAuth, validate(listMembersSchema), async (req, res) => {
   try {
     const { projectId } = req.validated.params;
 
@@ -1280,7 +1286,7 @@ app.get("/projects/:projectId/members", requireAuth, validate(listMembersSchema)
 });
 
 // Remove member (owner)
-app.delete(
+apiRouter.delete(
   "/projects/:projectId/members/:userId",
   requireAuth,
   validate(removeMemberSchema),
@@ -1310,7 +1316,7 @@ app.delete(
 );
 
 // Delete comment (author or project owner)
-app.delete("/comments/:commentId", requireAuth, validate(deleteCommentSchema), async (req, res) => {
+apiRouter.delete("/comments/:commentId", requireAuth, validate(deleteCommentSchema), async (req, res) => {
   try {
     const { commentId } = req.validated.params;
 
@@ -1346,7 +1352,7 @@ app.delete("/comments/:commentId", requireAuth, validate(deleteCommentSchema), a
 // ==================== USER MANAGEMENT (admin-only) ====================
 
 // List users (admin-only, paginated, searchable)
-app.get(
+apiRouter.get(
   "/users",
   requireAuth,
   requireAdmin,
@@ -1390,7 +1396,7 @@ app.get(
 );
 
 // Get single user by ID
-app.get(
+apiRouter.get(
   "/users/:userId",
   requireAuth,
   validate(getUserSchema),
@@ -1424,7 +1430,7 @@ app.get(
 );
 
 // Update user profile (admin or self)
-app.put(
+apiRouter.put(
   "/users/:userId",
   requireAuth,
   validate(updateUserSchema),
@@ -1473,7 +1479,7 @@ app.put(
 );
 
 // Delete/deactivate user (admin-only)
-app.delete(
+apiRouter.delete(
   "/users/:userId",
   requireAuth,
   requireAdmin,
@@ -1506,7 +1512,7 @@ app.delete(
 
 // ==================== DASHBOARD STATS ====================
 
-app.get(
+apiRouter.get(
   "/dashboard/stats",
   requireAuth,
   validate(dashboardStatsSchema),
@@ -1624,7 +1630,7 @@ app.get(
 // ==================== ORGANIZATION CRUD ====================
 
 // Create organization
-app.post(
+apiRouter.post(
   "/organizations",
   requireAuth,
   validate(createOrgSchema),
@@ -1657,7 +1663,7 @@ app.post(
 );
 
 // Get organization details
-app.get(
+apiRouter.get(
   "/organizations/:orgId",
   requireAuth,
   validate(getOrgSchema),
@@ -1684,7 +1690,7 @@ app.get(
 );
 
 // Update organization
-app.put(
+apiRouter.put(
   "/organizations/:orgId",
   requireAuth,
   validate(updateOrgSchema),
@@ -1707,7 +1713,7 @@ app.put(
 );
 
 // List organization members
-app.get(
+apiRouter.get(
   "/organizations/:orgId/members",
   requireAuth,
   validate(listOrgMembersSchema),
@@ -1798,7 +1804,7 @@ function generateToken() {
 // --- Org Invites ---
 
 // POST /organizations/:orgId/invites – send invite by email with role (admin-only)
-app.post(
+apiRouter.post(
   "/organizations/:orgId/invites",
   requireAuth,
   validate(createOrgInviteSchema),
@@ -1875,7 +1881,7 @@ app.post(
 );
 
 // GET /organizations/:orgId/invites – list pending invites (admin-only)
-app.get(
+apiRouter.get(
   "/organizations/:orgId/invites",
   requireAuth,
   validate(listOrgInvitesSchema),
@@ -1905,7 +1911,7 @@ app.get(
 // --- Project Invites ---
 
 // POST /projects/:projectId/invites – send invite by email with role (owner-only)
-app.post(
+apiRouter.post(
   "/projects/:projectId/invites",
   requireAuth,
   validate(createProjectInviteSchema),
@@ -1989,7 +1995,7 @@ app.post(
 );
 
 // GET /projects/:projectId/invites – list pending invites
-app.get(
+apiRouter.get(
   "/projects/:projectId/invites",
   requireAuth,
   validate(listProjectInvitesSchema),
@@ -2019,7 +2025,7 @@ app.get(
 // --- Shared invite endpoints ---
 
 // GET /invites/:token – look up invite by token (public – no auth, returns org/project name and role)
-app.get(
+apiRouter.get(
   "/invites/:token",
   validate(getInviteByTokenSchema),
   async (req, res) => {
@@ -2051,7 +2057,7 @@ app.get(
 );
 
 // POST /invites/:token/accept – accept invite (requires auth)
-app.post(
+apiRouter.post(
   "/invites/:token/accept",
   requireAuth,
   validate(getInviteByTokenSchema),
@@ -2136,7 +2142,7 @@ app.post(
 );
 
 // DELETE /invites/:id – cancel an invite (checks ownership by looking up invite)
-app.delete(
+apiRouter.delete(
   "/invites/:id",
   requireAuth,
   validate(cancelInviteSchema),
@@ -2206,7 +2212,7 @@ app.delete(
 );
 
 // GET /invites/pending – list pending invites for the authenticated user (by email)
-app.get("/invites/pending", requireAuth, async (req, res) => {
+apiRouter.get("/invites/pending", requireAuth, async (req, res) => {
   try {
     const user = await prisma.user.findUnique({
       where: { id: req.user.userId },
@@ -2256,7 +2262,7 @@ const markReadSchema = z.object({
 });
 
 // GET /notifications — list user's notifications (paginated, newest first, filterable by read/unread)
-app.get(
+apiRouter.get(
   "/notifications",
   requireAuth,
   validate(listNotificationsSchema),
@@ -2297,7 +2303,7 @@ app.get(
 );
 
 // GET /notifications/unread-count — return { count: N } for the badge
-app.get("/notifications/unread-count", requireAuth, async (req, res) => {
+apiRouter.get("/notifications/unread-count", requireAuth, async (req, res) => {
   try {
     const count = await prisma.notification.count({
       where: { userId: req.user.userId, read: false },
@@ -2309,7 +2315,7 @@ app.get("/notifications/unread-count", requireAuth, async (req, res) => {
 });
 
 // PUT /notifications/:id/read — mark single notification as read
-app.put(
+apiRouter.put(
   "/notifications/:id/read",
   requireAuth,
   validate(markReadSchema),
@@ -2338,7 +2344,7 @@ app.put(
 );
 
 // PUT /notifications/read-all — mark all as read
-app.put("/notifications/read-all", requireAuth, async (req, res) => {
+apiRouter.put("/notifications/read-all", requireAuth, async (req, res) => {
   try {
     await prisma.notification.updateMany({
       where: { userId: req.user.userId, read: false },
@@ -2351,6 +2357,13 @@ app.put("/notifications/read-all", requireAuth, async (req, res) => {
 });
 
 // -------------------- ERROR HANDLER --------------------
+
+// 404 handler for unmatched API routes
+apiRouter.use((req, res) => {
+  res.status(404).json({ error: "not_found", path: req.path });
+});
+
+app.use("/api", apiRouter);
 
 app.use((err, req, res, next) => {
   console.error(err);
@@ -2367,9 +2380,28 @@ app.use((err, req, res, next) => {
   });
 });
 
+// -------------------- STATIC FILES & SPA --------------------
+
+// Landing page at root
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "..", "landing.html"));
+});
+
+// Landing page static assets (CSS, JS from TanStack Start build)
+app.use("/assets", express.static(path.join(__dirname, "..", "..", "site", "dist", "client", "assets")));
+
+// Frontend SPA static files
+const spaDist = path.join(__dirname, "..", "frontend", "dist");
+app.use(express.static(spaDist));
+
+// SPA catch-all for client-side routing
+app.get("/{*path}", (req, res) => {
+  res.sendFile(path.join(spaDist, "index.html"));
+});
+
 // -------------------- START SERVER --------------------
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server listening on http://localhost:${PORT}`);
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Server listening on http://0.0.0.0:${PORT}`);
 });
