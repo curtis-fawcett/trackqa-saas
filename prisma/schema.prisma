@@ -141,9 +141,10 @@ model Ticket {
   reporter   User   @relation(fields: [reporterId], references: [id])
 
   assigneeId String?
-  assignee   User?            @relation("TicketAssignee", fields: [assigneeId], references: [id])
-  comments   Comment[]
-  activities TicketActivity[]
+  assignee     User?            @relation("TicketAssignee", fields: [assigneeId], references: [id])
+  comments     Comment[]
+  activities   TicketActivity[]
+  notifications Notification[]
 }
 
 model Comment {
