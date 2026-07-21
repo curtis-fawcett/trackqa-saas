@@ -1,6 +1,6 @@
 import { Outlet, NavLink, useNavigate } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
-import { api } from '@/lib/api';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { api, type Notification, type NotificationType } from '@/lib/api';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -11,7 +11,21 @@ import {
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
-import { LayoutDashboard, FolderKanban, Settings, LogOut, Bug, Building } from 'lucide-react';
+import {
+  LayoutDashboard,
+  FolderKanban,
+  Settings,
+  LogOut,
+  Bug,
+  Building,
+  Bell,
+  UserCheck,
+  ArrowRightLeft,
+  AtSign,
+  MessageSquare,
+  UserPlus,
+  ChevronRight,
+} from 'lucide-react';
 
 const navItems = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -19,6 +33,134 @@ const navItems = [
   { to: '/organization', label: 'Organization', icon: Building },
   { to: '/settings', label: 'Settings', icon: Settings },
 ];
+
+const typeIcons: Record<NotificationType, React.ComponentType<{ className?: string }>> = {
+  ASSIGNED: UserCheck,
+  STATUS_CHANGE: ArrowRightLeft,
+  MENTION: AtSign,
+  COMMENT: MessageSquare,
+  INVITE: UserPlus,
+};
+
+const typeColors: Record<NotificationType, string> = {
+  ASSIGNED: 'text-blue-400',
+  STATUS_CHANGE: 'text-amber-400',
+  MENTION: 'text-purple-400',
+  COMMENT: 'text-emerald-400',
+  INVITE: 'text-rose-400',
+};
+
+function timeAgo(dateStr: string): string {
+  const now = Date.now();
+  const then = new Date(dateStr).getTime();
+  const seconds = Math.floor((now - then) / 1000);
+  if (seconds < 60) return 'just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  return new Date(dateStr).toLocaleDateString();
+}
+
+function NotificationBell() {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+
+  const { data: unread } = useQuery({
+    queryKey: ['unreadCount'],
+    queryFn: api.getUnreadCount,
+    refetchInterval: 30_000,
+  });
+
+  const { data: recent } = useQuery({
+    queryKey: ['notifications', 'recent'],
+    queryFn: () => api.getNotifications({ pageSize: 5 }),
+    staleTime: 15_000,
+  });
+
+  const count = unread?.count ?? 0;
+  const notifications = recent?.notifications ?? [];
+
+  const handleClick = async (n: Notification) => {
+    if (!n.read) {
+      await api.markRead(n.id);
+      queryClient.invalidateQueries({ queryKey: ['unreadCount'] });
+      queryClient.invalidateQueries({ queryKey: ['notifications'] });
+    }
+    if (n.ticketId) {
+      navigate(`/tickets/${n.ticketId}`);
+    } else if (n.projectId) {
+      navigate(`/projects/${n.projectId}`);
+    }
+  };
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="icon" className="relative">
+          <Bell className="h-5 w-5 text-slate-400" />
+          {count > 0 && (
+            <span className="absolute -top-0.5 -right-0.5 flex h-5 min-w-[20px] items-center justify-center rounded-full bg-red-500 px-1 text-[11px] font-bold text-white">
+              {count > 99 ? '99+' : count}
+            </span>
+          )}
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-80">
+        <div className="flex items-center justify-between px-3 py-2">
+          <span className="text-sm font-semibold text-slate-200">Notifications</span>
+          {count > 0 && (
+            <span className="text-xs text-slate-400">{count} unread</span>
+          )}
+        </div>
+        <DropdownMenuSeparator />
+        {notifications.length === 0 ? (
+          <div className="px-3 py-6 text-center text-sm text-slate-500">
+            No notifications yet
+          </div>
+        ) : (
+          notifications.map((n) => {
+            const Icon = typeIcons[n.type] || Bell;
+            const colorClass = typeColors[n.type] || 'text-slate-400';
+            return (
+              <DropdownMenuItem
+                key={n.id}
+                onClick={() => handleClick(n)}
+                className={`flex items-start gap-3 px-3 py-2.5 cursor-pointer ${
+                  !n.read ? 'bg-primary/5' : ''
+                }`}
+              >
+                <div className={`mt-0.5 shrink-0 ${colorClass}`}>
+                  <Icon className="h-4 w-4" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className={`text-sm truncate ${!n.read ? 'text-slate-100 font-medium' : 'text-slate-300'}`}>
+                    {n.title}
+                  </p>
+                  <p className="text-xs text-slate-500 truncate mt-0.5">{n.body}</p>
+                  <p className="text-[11px] text-slate-600 mt-1">{timeAgo(n.createdAt)}</p>
+                </div>
+                {!n.read && (
+                  <span className="mt-1.5 h-2 w-2 rounded-full bg-primary shrink-0" />
+                )}
+              </DropdownMenuItem>
+            );
+          })
+        )}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          onClick={() => navigate('/notifications')}
+          className="justify-center text-sm text-primary cursor-pointer font-medium"
+        >
+          View all notifications
+          <ChevronRight className="ml-1 h-4 w-4" />
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
 
 export function Layout() {
   const navigate = useNavigate();
@@ -110,6 +252,10 @@ export function Layout() {
 
       {/* Main content */}
       <main className="flex-1 overflow-auto">
+        {/* Top bar with notification bell */}
+        <div className="flex items-center justify-end h-14 px-6 border-b border-border bg-card/50">
+          <NotificationBell />
+        </div>
         <div className="p-8">
           <Outlet />
         </div>

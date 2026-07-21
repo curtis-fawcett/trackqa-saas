@@ -221,6 +221,35 @@ export interface ProjectMember {
   user: { id: string; email: string; name: string | null };
 }
 
+// ── Notification types ─────────────────────────────────────
+
+export type NotificationType = 'ASSIGNED' | 'STATUS_CHANGE' | 'MENTION' | 'COMMENT' | 'INVITE';
+
+export interface Notification {
+  id: string;
+  userId: string;
+  type: NotificationType;
+  title: string;
+  body: string;
+  ticketId?: string | null;
+  projectId?: string | null;
+  read: boolean;
+  createdAt: string;
+  ticket?: { id: string; title: string } | null;
+}
+
+export interface NotificationsResponse {
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+  notifications: Notification[];
+}
+
+export interface UnreadCount {
+  count: number;
+}
+
 // ── API client ──────────────────────────────────────────────
 
 export const api = {
@@ -353,4 +382,23 @@ export const api = {
 
   getPendingInvites: () =>
     apiRequest<Invite[]>('/invites/pending'),
+
+  // Notifications
+  getNotifications: (params?: { unread?: boolean; page?: number; pageSize?: number }) => {
+    const cleanParams: Record<string, string> = {};
+    if (params?.unread !== undefined) cleanParams['unread'] = String(params.unread);
+    if (params?.page && params.page > 1) cleanParams['page'] = String(params.page);
+    if (params?.pageSize) cleanParams['pageSize'] = String(params.pageSize);
+    const qs = new URLSearchParams(cleanParams).toString();
+    return apiRequest<NotificationsResponse>(`/notifications${qs ? '?' + qs : ''}`);
+  },
+
+  getUnreadCount: () =>
+    apiRequest<UnreadCount>('/notifications/unread-count'),
+
+  markRead: (id: string) =>
+    apiRequest<Notification>(`/notifications/${id}/read`, { method: 'PUT' }),
+
+  markAllRead: () =>
+    apiRequest<{ ok: boolean }>('/notifications/read-all', { method: 'PUT' }),
 };

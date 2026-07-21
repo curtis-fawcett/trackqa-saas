@@ -11,6 +11,7 @@ import { TicketDetail } from '@/pages/TicketDetail';
 import { Settings } from '@/pages/Settings';
 import { OrgSettings } from '@/pages/OrgSettings';
 import { AcceptInvite } from '@/pages/AcceptInvite';
+import { Notifications } from '@/pages/Notifications';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -45,6 +46,7 @@ export default function App() {
             <Route path="/tickets/:id" element={<TicketDetail />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/organization" element={<OrgSettings />} />
+            <Route path="/notifications" element={<Notifications />} />
           </Route>
 
           {/* Catch-all: redirect to dashboard */}

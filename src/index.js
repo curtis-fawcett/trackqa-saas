@@ -128,6 +128,32 @@ async function logActivity({ ticketId, actorId, type, message }) {
   });
 }
 
+// --- Notification helper ---
+async function createNotification({ userId, type, title, body, ticketId, projectId }) {
+  // Don't notify self
+  return prisma.notification.create({
+    data: { userId, type, title, body, ticketId, projectId },
+  });
+}
+
+// Scan content for @mentions and return array of mentioned usernames
+async function resolveMentions(content, projectId) {
+  const mentions = [...content.matchAll(/@(\w+)/g)].map((m) => m[1]);
+  if (mentions.length === 0) return [];
+  // Look up users by name within the project's members
+  const users = await prisma.user.findMany({
+    where: {
+      name: { in: mentions },
+      OR: [
+        { ownedProjects: { some: { id: projectId } } },
+        { memberships: { some: { projectId } } },
+      ],
+    },
+    select: { id: true, name: true },
+  });
+  return users;
+}
+
 async function getProjectRole(projectId, userId) {
   // owner is always OWNER
   const project = await prisma.project.findUnique({
@@ -872,6 +898,24 @@ app.patch(
       });
     }
 
+    // Create STATUS_CHANGE notification if status changed
+    if (status && status !== before.status) {
+      const recipients = new Set();
+      if (updated.assigneeId && updated.assigneeId !== req.user.userId) recipients.add(updated.assigneeId);
+      if (updated.reporterId && updated.reporterId !== req.user.userId) recipients.add(updated.reporterId);
+
+      for (const uid of recipients) {
+        await createNotification({
+          userId: uid,
+          type: "STATUS_CHANGE",
+          title: "Ticket status updated",
+          body: `"${updated.title}" moved from ${before.status} to ${status}`,
+          ticketId,
+          projectId: updated.projectId,
+        });
+      }
+    }
+
     res.json(updated);
   }
 );
@@ -908,6 +952,42 @@ app.post(
         type: "COMMENT_ADDED",
         message: "Comment added",
       });
+
+      // Notify ticket assignee and reporter about new comment (but not the author)
+      const ticket = await prisma.ticket.findUnique({
+        where: { id: ticketId },
+        select: { title: true, assigneeId: true, reporterId: true, projectId: true },
+      });
+
+      const commentRecipients = new Set();
+      if (ticket.assigneeId && ticket.assigneeId !== req.user.userId) commentRecipients.add(ticket.assigneeId);
+      if (ticket.reporterId && ticket.reporterId !== req.user.userId) commentRecipients.add(ticket.reporterId);
+
+      for (const uid of commentRecipients) {
+        await createNotification({
+          userId: uid,
+          type: "COMMENT",
+          title: "New comment",
+          body: `New comment on "${ticket.title}"`,
+          ticketId,
+          projectId: ticket.projectId,
+        });
+      }
+
+      // Resolve @mentions and create MENTION notifications
+      const mentionedUsers = await resolveMentions(content, ticket.projectId);
+      for (const user of mentionedUsers) {
+        if (user.id !== req.user.userId && !commentRecipients.has(user.id)) {
+          await createNotification({
+            userId: user.id,
+            type: "MENTION",
+            title: "You were mentioned",
+            body: `You were mentioned in a comment on "${ticket.title}"`,
+            ticketId,
+            projectId: ticket.projectId,
+          });
+        }
+      }
 
       res.status(201).json(comment);
     } catch (err) {
@@ -984,6 +1064,22 @@ app.patch(
         type: "TICKET_UPDATED",
         message,
       });
+
+      // Create ASSIGNED notification for the new assignee
+      if (assigneeId && assigneeId !== req.user.userId) {
+        const ticket = await prisma.ticket.findUnique({
+          where: { id: ticketId },
+          select: { title: true, projectId: true },
+        });
+        await createNotification({
+          userId: assigneeId,
+          type: "ASSIGNED",
+          title: "Ticket assigned to you",
+          body: `You were assigned to "${ticket.title}"`,
+          ticketId,
+          projectId: ticket.projectId,
+        });
+      }
 
       res.json(updated);
     } catch (err) {
@@ -1609,6 +1705,24 @@ app.post(
         },
       });
 
+      // Create INVITE notification if the invited user exists
+      const invitedUser = await prisma.user.findUnique({
+        where: { email },
+        select: { id: true },
+      });
+      if (invitedUser && invitedUser.id !== req.user.userId) {
+        const org = await prisma.organization.findUnique({
+          where: { id: orgId },
+          select: { name: true },
+        });
+        await createNotification({
+          userId: invitedUser.id,
+          type: "INVITE",
+          title: "Organization invitation",
+          body: `You've been invited to join "${org?.name || 'an organization'}"`,
+        });
+      }
+
       res.status(201).json(invite);
     } catch (err) {
       res.status(500).json({ error: String(err) });
@@ -1703,6 +1817,25 @@ app.post(
           project: { select: { id: true, name: true } },
         },
       });
+
+      // Create INVITE notification if the invited user exists
+      const invitedUser = await prisma.user.findUnique({
+        where: { email },
+        select: { id: true },
+      });
+      if (invitedUser && invitedUser.id !== req.user.userId) {
+        const proj = await prisma.project.findUnique({
+          where: { id: projectId },
+          select: { name: true },
+        });
+        await createNotification({
+          userId: invitedUser.id,
+          type: "INVITE",
+          title: "Project invitation",
+          body: `You've been invited to join "${proj?.name || 'a project'}"`,
+          projectId,
+        });
+      }
 
       res.status(201).json(invite);
     } catch (err) {
@@ -1952,6 +2085,122 @@ app.get("/invites/pending", requireAuth, async (req, res) => {
     });
 
     res.json(invites);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ==================== NOTIFICATIONS ====================
+
+// Zod schemas for notifications
+const listNotificationsSchema = z.object({
+  body: z.any(),
+  params: z.any(),
+  query: z.object({
+    unread: z.enum(["true", "false"]).optional(),
+    page: z.coerce.number().int().min(1).optional(),
+    pageSize: z.coerce.number().int().min(1).max(100).optional(),
+  }),
+});
+
+const markReadSchema = z.object({
+  body: z.any(),
+  params: z.object({
+    id: z.string().min(1),
+  }),
+  query: z.any(),
+});
+
+// GET /notifications — list user's notifications (paginated, newest first, filterable by read/unread)
+app.get(
+  "/notifications",
+  requireAuth,
+  validate(listNotificationsSchema),
+  async (req, res) => {
+    try {
+      const { unread, page = 1, pageSize = 20 } = req.validated.query;
+      const skip = (page - 1) * pageSize;
+
+      const where = {
+        userId: req.user.userId,
+        ...(unread === "true" ? { read: false } : unread === "false" ? { read: true } : {}),
+      };
+
+      const [total, notifications] = await Promise.all([
+        prisma.notification.count({ where }),
+        prisma.notification.findMany({
+          where,
+          orderBy: { createdAt: "desc" },
+          skip,
+          take: pageSize,
+          include: {
+            ticket: { select: { id: true, title: true } },
+          },
+        }),
+      ]);
+
+      res.json({
+        page,
+        pageSize,
+        total,
+        totalPages: Math.ceil(total / pageSize),
+        notifications,
+      });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  }
+);
+
+// GET /notifications/unread-count — return { count: N } for the badge
+app.get("/notifications/unread-count", requireAuth, async (req, res) => {
+  try {
+    const count = await prisma.notification.count({
+      where: { userId: req.user.userId, read: false },
+    });
+    res.json({ count });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// PUT /notifications/:id/read — mark single notification as read
+app.put(
+  "/notifications/:id/read",
+  requireAuth,
+  validate(markReadSchema),
+  async (req, res) => {
+    try {
+      const { id } = req.validated.params;
+
+      const notification = await prisma.notification.findUnique({
+        where: { id },
+        select: { userId: true },
+      });
+
+      if (!notification) return res.status(404).json({ error: "notification not found" });
+      if (notification.userId !== req.user.userId) return res.status(403).json({ error: "forbidden" });
+
+      const updated = await prisma.notification.update({
+        where: { id },
+        data: { read: true },
+      });
+
+      res.json(updated);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  }
+);
+
+// PUT /notifications/read-all — mark all as read
+app.put("/notifications/read-all", requireAuth, async (req, res) => {
+  try {
+    await prisma.notification.updateMany({
+      where: { userId: req.user.userId, read: false },
+      data: { read: true },
+    });
+    res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }

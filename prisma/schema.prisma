@@ -32,6 +32,7 @@ model User {
   organizationMemberships OrganizationMember[]
   ownedOrganizations    Organization[]        @relation("OrganizationOwner")
   invitesSent           Invite[]              @relation("InvitedBy")
+  notifications         Notification[]
 }
 
 model Project {
@@ -196,6 +197,23 @@ model ProjectMember {
   @@unique([projectId, userId])
   @@index([projectId])
   @@index([userId])
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String   // ASSIGNED, STATUS_CHANGE, MENTION, COMMENT, INVITE
+  title     String
+  body      String
+  ticketId  String?
+  ticket    Ticket?  @relation(fields: [ticketId], references: [id], onDelete: SetNull)
+  projectId String?
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId, read])
+  @@index([userId, createdAt])
 }
 
 model Invite {
