@@ -23,6 +23,8 @@ import {
   stripe,
 } from "./stripe.js";
 
+import { sendVerificationEmail, sendPasswordResetEmail } from "./email.js";
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -701,7 +703,10 @@ apiRouter.post("/auth/register", validate(registerSchema), async (req, res) => {
       },
     });
 
-    res.status(201).json({ ...user, verificationToken: verifyToken });
+    // Fire-and-forget: send verification email (failures are logged, never break the API)
+    sendVerificationEmail(email, verifyToken).catch(() => {});
+
+    res.status(201).json({ ...user, message: "Verification email sent. Check your inbox." });
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }
@@ -785,7 +790,10 @@ apiRouter.post("/auth/resend-verification", requireAuth, async (req, res) => {
       },
     });
 
-    res.json({ verificationToken: token });
+    // Fire-and-forget: send verification email (failures are logged, never break the API)
+    sendVerificationEmail(req.user.email, token).catch(() => {});
+
+    res.json({ message: "Verification email sent. Check your inbox." });
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }
@@ -821,7 +829,10 @@ apiRouter.post("/auth/forgot-password", async (req, res) => {
       },
     });
 
-    res.json({ message: "if an account exists with that email, a reset token has been generated", resetToken: token });
+    // Fire-and-forget: send password reset email
+    sendPasswordResetEmail(email, token).catch(() => {});
+
+    res.json({ message: "if an account exists with that email, a reset link has been sent" });
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }

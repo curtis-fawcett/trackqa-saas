@@ -6,46 +6,24 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
-import { Bug, Loader2, CheckCircle, Copy, Mail } from 'lucide-react';
+import { Bug, Loader2, Mail } from 'lucide-react';
 
 export function Register() {
   const navigate = useNavigate();
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [verificationToken, setVerificationToken] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [registered, setRegistered] = useState(false);
 
   const registerMutation = useMutation({
     mutationFn: (data: { email: string; password: string; name: string }) => api.register(data),
-    onSuccess: (data) => {
-      if (data.verificationToken) {
-        setVerificationToken(data.verificationToken);
-      }
-    },
-  });
-
-  const verifyMutation = useMutation({
-    mutationFn: (token: string) => api.verifyEmail(token),
     onSuccess: () => {
-      // After verification, log the user in
-      api.login({ email, password }).then((data) => {
-        localStorage.setItem('token', data.token);
-        navigate('/dashboard');
-      });
+      setRegistered(true);
     },
   });
-
-  const handleCopy = () => {
-    if (verificationToken) {
-      navigator.clipboard.writeText(verificationToken);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }
-  };
 
   // Show verification screen after registration
-  if (verificationToken) {
+  if (registered) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background p-4">
         <Card className="w-full max-w-md">
@@ -53,53 +31,22 @@ export function Register() {
             <div className="flex justify-center mb-2">
               <Mail className="h-10 w-10 text-primary" />
             </div>
-            <CardTitle className="text-2xl">Verify your email</CardTitle>
+            <CardTitle className="text-2xl">Check your email</CardTitle>
             <CardDescription>
-              Please verify your email address to continue. In development mode, use the token below.
+              We've sent a verification link to <strong>{email}</strong>. Click the link in the email to verify your account.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="rounded-md bg-emerald-900/30 border border-emerald-800 px-4 py-3">
-              <p className="text-sm text-emerald-300 font-medium mb-2">Verification token:</p>
-              <div className="flex items-center gap-2">
-                <code className="flex-1 rounded bg-background/50 px-3 py-2 text-sm font-mono text-slate-200 break-all">
-                  {verificationToken}
-                </code>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={handleCopy}
-                  className="shrink-0"
-                >
-                  {copied ? <CheckCircle className="h-4 w-4 text-emerald-400" /> : <Copy className="h-4 w-4" />}
-                </Button>
-              </div>
+              <p className="text-sm text-emerald-300">
+                Didn't receive the email? Check your spam folder or request a new verification email after logging in.
+              </p>
             </div>
-            {verifyMutation.isError && (
-              <div className="rounded-md bg-red-900/30 border border-red-800 px-4 py-3 text-sm text-red-300">
-                {verifyMutation.error?.message || 'Verification failed. Please try again.'}
-              </div>
-            )}
           </CardContent>
           <CardFooter className="flex flex-col gap-4">
-            <Button
-              className="w-full"
-              onClick={() => verifyMutation.mutate(verificationToken)}
-              disabled={verifyMutation.isPending}
-            >
-              {verifyMutation.isPending ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <CheckCircle className="mr-2 h-4 w-4" />
-              )}
-              Verify Now
+            <Button className="w-full" onClick={() => navigate('/login')}>
+              Go to Login
             </Button>
-            <p className="text-sm text-muted-foreground text-center">
-              Already have an account?{' '}
-              <Link to="/login" className="text-primary hover:underline">
-                Sign in
-              </Link>
-            </p>
           </CardFooter>
         </Card>
       </div>
