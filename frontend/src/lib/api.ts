@@ -139,7 +139,19 @@ export interface TicketsResponse {
   tickets: Ticket[];
   total: number;
   page: number;
+  pageSize: number;
   totalPages: number;
+}
+
+export interface TicketFilters {
+  status?: TicketStatus;
+  priority?: TicketPriority;
+  type?: TicketType;
+  search?: string;
+  page?: number;
+  pageSize?: number;
+  sortBy?: 'createdAt' | 'updatedAt' | 'priority' | 'status' | 'title';
+  sortOrder?: 'asc' | 'desc';
 }
 
 // ── Comment types ───────────────────────────────────────────
@@ -245,19 +257,18 @@ export const api = {
     apiRequest<{ message: string }>(`/projects/${id}`, { method: 'DELETE' }),
 
   // Tickets
-  getTickets: (projectId: string, params?: {
-    status?: string;
-    priority?: string;
-    type?: string;
-    search?: string;
-    page?: number;
-  }) => {
+  getTickets: (projectId: string, params?: TicketFilters) => {
     const cleanParams: Record<string, string> = {};
     if (params) {
-      for (const [key, value] of Object.entries(params)) {
-        if (value !== undefined && value !== '') {
-          cleanParams[key] = String(value);
-        }
+      if (params.status) cleanParams['status'] = params.status;
+      if (params.priority) cleanParams['priority'] = params.priority;
+      if (params.type) cleanParams['type'] = params.type;
+      if (params.search) cleanParams['q'] = params.search; // backend uses 'q' for search
+      if (params.page && params.page > 1) cleanParams['page'] = String(params.page);
+      if (params.pageSize) cleanParams['pageSize'] = String(params.pageSize);
+      if (params.sortBy) {
+        const order = params.sortOrder || 'desc';
+        cleanParams['sort'] = `${params.sortBy}:${order}`;
       }
     }
     const qs = new URLSearchParams(cleanParams).toString();
