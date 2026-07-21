@@ -28,13 +28,17 @@ export interface AuthResponse {
   id: string;
   email: string;
   name: string;
+  emailVerified?: boolean;
   token?: string;
+  verificationToken?: string;
 }
 
 export interface User {
   id: string;
   email: string;
   name: string;
+  emailVerified?: boolean;
+  role?: string;
   createdAt: string;
 }
 
@@ -261,7 +265,7 @@ export const api = {
     }),
 
   login: (data: { email: string; password: string }) =>
-    apiRequest<AuthResponse & { token: string }>('/auth/login', {
+    apiRequest<{ token: string; user: { id: string; email: string; name: string; emailVerified: boolean } }>('/auth/login', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
@@ -401,4 +405,29 @@ export const api = {
 
   markAllRead: () =>
     apiRequest<{ ok: boolean }>('/notifications/read-all', { method: 'PUT' }),
+
+  // Email verification
+  verifyEmail: (token: string) =>
+    apiRequest<{ message: string }>('/auth/verify-email', {
+      method: 'POST',
+      body: JSON.stringify({ token }),
+    }),
+
+  resendVerification: () =>
+    apiRequest<{ verificationToken: string }>('/auth/resend-verification', {
+      method: 'POST',
+    }),
+
+  // Password reset
+  forgotPassword: (email: string) =>
+    apiRequest<{ message: string; resetToken?: string }>('/auth/forgot-password', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    }),
+
+  resetPassword: (token: string, newPassword: string) =>
+    apiRequest<{ message: string }>('/auth/reset-password', {
+      method: 'POST',
+      body: JSON.stringify({ token, newPassword }),
+    }),
 };

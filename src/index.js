@@ -80,6 +80,21 @@ async function requireAdmin(req, res, next) {
   }
 }
 
+async function requireEmailVerified(req, res, next) {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.userId },
+      select: { emailVerified: true },
+    });
+    if (!user || !user.emailVerified) {
+      return res.status(403).json({ error: "email_not_verified", message: "Please verify your email address to access this feature." });
+    }
+    next();
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+}
+
 async function requireOrgRole(minRole) {
   // minRole: "MEMBER", "ADMIN", or "OWNER"
   return async (req, res, next) => {
@@ -583,10 +598,21 @@ app.post("/auth/register", validate(registerSchema), async (req, res) => {
 
     const user = await prisma.user.create({
       data: { email, password: hashed, name },
-      select: { id: true, email: true, name: true, createdAt: true },
+      select: { id: true, email: true, name: true, createdAt: true, emailVerified: true },
     });
 
-    res.status(201).json(user);
+    // Auto-create verification token
+    const verifyToken = generateToken();
+    await prisma.verificationToken.create({
+      data: {
+        userId: user.id,
+        token: verifyToken,
+        type: "EMAIL_VERIFY",
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24 hours
+      },
+    });
+
+    res.status(201).json({ ...user, verificationToken: verifyToken });
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }
@@ -603,11 +629,13 @@ app.post("/auth/login", validate(loginSchema), async (req, res) => {
     const valid = await bcrypt.compare(password, user.password);
     if (!valid) return res.status(401).json({ error: "invalid credentials" });
 
-    const token = jwt.sign({ userId: user.id, email: user.email }, process.env.JWT_SECRET, {
-      expiresIn: "7d",
-    });
+    const token = jwt.sign(
+      { userId: user.id, email: user.email, emailVerified: user.emailVerified },
+      process.env.JWT_SECRET,
+      { expiresIn: "7d" }
+    );
 
-    res.json({ token });
+    res.json({ token, user: { id: user.id, email: user.email, name: user.name, emailVerified: user.emailVerified } });
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }
@@ -617,16 +645,131 @@ app.post("/auth/login", validate(loginSchema), async (req, res) => {
 app.get("/me", requireAuth, async (req, res) => {
   const user = await prisma.user.findUnique({
     where: { id: req.user.userId },
-    select: { id: true, email: true, name: true, role: true, createdAt: true },
+    select: { id: true, email: true, name: true, role: true, emailVerified: true, createdAt: true },
   });
 
   res.json(user);
 });
 
+// ==================== EMAIL VERIFICATION & PASSWORD RESET ====================
+
+// Verify email
+app.post("/auth/verify-email", async (req, res) => {
+  try {
+    const { token } = req.body;
+    if (!token) return res.status(400).json({ error: "token is required" });
+
+    const vt = await prisma.verificationToken.findUnique({ where: { token } });
+    if (!vt) return res.status(400).json({ error: "invalid token" });
+    if (vt.type !== "EMAIL_VERIFY") return res.status(400).json({ error: "invalid token type" });
+    if (vt.expiresAt < new Date()) return res.status(400).json({ error: "token expired" });
+
+    await prisma.user.update({
+      where: { id: vt.userId },
+      data: { emailVerified: true },
+    });
+
+    // Delete the used token
+    await prisma.verificationToken.delete({ where: { id: vt.id } });
+
+    res.json({ message: "email verified successfully" });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// Resend verification token (requires auth)
+app.post("/auth/resend-verification", requireAuth, async (req, res) => {
+  try {
+    // Delete old EMAIL_VERIFY tokens for this user
+    await prisma.verificationToken.deleteMany({
+      where: { userId: req.user.userId, type: "EMAIL_VERIFY" },
+    });
+
+    const token = generateToken();
+    await prisma.verificationToken.create({
+      data: {
+        userId: req.user.userId,
+        token,
+        type: "EMAIL_VERIFY",
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      },
+    });
+
+    res.json({ verificationToken: token });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// Forgot password
+app.post("/auth/forgot-password", async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      // Always return success to prevent email enumeration
+      return res.json({ message: "if an account exists with that email, a reset token has been generated" });
+    }
+
+    const user = await prisma.user.findUnique({ where: { email }, select: { id: true } });
+
+    if (!user) {
+      return res.json({ message: "if an account exists with that email, a reset token has been generated" });
+    }
+
+    // Delete old PASSWORD_RESET tokens for this user
+    await prisma.verificationToken.deleteMany({
+      where: { userId: user.id, type: "PASSWORD_RESET" },
+    });
+
+    const token = generateToken();
+    await prisma.verificationToken.create({
+      data: {
+        userId: user.id,
+        token,
+        type: "PASSWORD_RESET",
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      },
+    });
+
+    res.json({ message: "if an account exists with that email, a reset token has been generated", resetToken: token });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// Reset password
+app.post("/auth/reset-password", async (req, res) => {
+  try {
+    const { token, newPassword } = req.body;
+    if (!token || !newPassword) return res.status(400).json({ error: "token and newPassword are required" });
+    if (newPassword.length < 8) return res.status(400).json({ error: "password must be at least 8 characters" });
+
+    const vt = await prisma.verificationToken.findUnique({ where: { token } });
+    if (!vt) return res.status(400).json({ error: "invalid token" });
+    if (vt.type !== "PASSWORD_RESET") return res.status(400).json({ error: "invalid token type" });
+    if (vt.expiresAt < new Date()) return res.status(400).json({ error: "token expired" });
+
+    const hashed = await bcrypt.hash(newPassword, 12);
+
+    await prisma.user.update({
+      where: { id: vt.userId },
+      data: { password: hashed, passwordChangedAt: new Date() },
+    });
+
+    // Delete the used token
+    await prisma.verificationToken.delete({ where: { id: vt.id } });
+
+    res.json({ message: "password reset successfully" });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 // ==================== PROJECT CRUD ====================
 
 // Create project
-app.post("/projects", requireAuth, validate(createProjectSchema), async (req, res) => {
+app.post("/projects", requireAuth, requireEmailVerified, validate(createProjectSchema), async (req, res) => {
   try {
     const { name, description, organizationId } = req.validated.body;
 
@@ -746,6 +889,7 @@ app.delete(
 app.post(
   "/projects/:projectId/tickets",
   requireAuth,
+  requireEmailVerified,
   validate(createTicketSchema),
   requireProjectRole("MEMBER"),
   async (req, res, next) => {

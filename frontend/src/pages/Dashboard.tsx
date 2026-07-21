@@ -1,10 +1,13 @@
-import { useQuery } from '@tanstack/react-query';
+import { useState } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { AlertCircle, CheckCircle2, Clock, Inbox, Loader2 } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { AlertCircle, CheckCircle2, Clock, Inbox, Loader2, Mail, RefreshCw } from 'lucide-react';
 
 export function Dashboard() {
+  const queryClient = useQueryClient();
   const { data: user, isLoading: userLoading } = useQuery({
     queryKey: ['me'],
     queryFn: api.getMe,
@@ -16,6 +19,16 @@ export function Dashboard() {
     queryFn: api.getDashboardStats,
     staleTime: 30 * 1000,
   });
+
+  const resendMutation = useMutation({
+    mutationFn: () => api.resendVerification(),
+    onSuccess: (data) => {
+      // Store the new token for display
+      setResendToken(data.verificationToken);
+    },
+  });
+
+  const [resendToken, setResendToken] = useState<string | null>(null);
 
   if (userLoading || statsLoading) {
     return (
@@ -65,6 +78,43 @@ export function Dashboard() {
         </h1>
         <p className="text-slate-400 mt-1">Here&apos;s what&apos;s happening with your projects.</p>
       </div>
+
+      {/* Verification banner for unverified users */}
+      {user && !user.emailVerified && (
+        <div className="rounded-lg border border-amber-800 bg-amber-900/20 p-4">
+          <div className="flex items-start gap-3">
+            <Mail className="h-5 w-5 text-amber-400 mt-0.5 shrink-0" />
+            <div className="flex-1">
+              <p className="text-sm font-medium text-amber-300">
+                Verify your email to unlock all features
+              </p>
+              <p className="text-sm text-amber-400/70 mt-1">
+                You need to verify your email before you can create projects or tickets.
+              </p>
+              {resendToken && (
+                <div className="mt-2 rounded bg-background/50 px-3 py-2">
+                  <p className="text-xs text-slate-400 mb-1">New verification token:</p>
+                  <code className="text-xs font-mono text-slate-200 break-all">{resendToken}</code>
+                </div>
+              )}
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => resendMutation.mutate()}
+              disabled={resendMutation.isPending}
+              className="shrink-0 border-amber-700 text-amber-300 hover:bg-amber-900/30"
+            >
+              {resendMutation.isPending ? (
+                <Loader2 className="mr-2 h-3 w-3 animate-spin" />
+              ) : (
+                <RefreshCw className="mr-2 h-3 w-3" />
+              )}
+              Resend
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* Stat cards */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">

@@ -12,6 +12,9 @@ import { Settings } from '@/pages/Settings';
 import { OrgSettings } from '@/pages/OrgSettings';
 import { AcceptInvite } from '@/pages/AcceptInvite';
 import { Notifications } from '@/pages/Notifications';
+import { VerifyEmail } from '@/pages/VerifyEmail';
+import { ForgotPassword } from '@/pages/ForgotPassword';
+import { ResetPassword } from '@/pages/ResetPassword';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -30,6 +33,9 @@ export default function App() {
           {/* Public routes */}
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
+          <Route path="/verify-email" element={<VerifyEmail />} />
+          <Route path="/forgot-password" element={<ForgotPassword />} />
+          <Route path="/reset-password" element={<ResetPassword />} />
           <Route path="/invite/:token" element={<AcceptInvite />} />
 
           {/* Protected routes */}
