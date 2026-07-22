@@ -337,6 +337,7 @@ function checkPlanLimit(limitType) {
 // -------------------- APP SETUP --------------------
 
 const app = express();
+app.set("trust proxy", 1);
 const apiRouter = express.Router();
 
 app.use(helmet());
