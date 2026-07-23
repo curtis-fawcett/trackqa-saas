@@ -2652,23 +2652,8 @@ app.use((err, req, res, next) => {
 });
 
 // -------------------- STATIC FILES & SPA --------------------
-
-// Landing page at root
-app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "..", "landing.html"));
-});
-
-// Landing page static assets (CSS, JS from TanStack Start build)
-app.use("/assets", express.static(path.join(__dirname, "..", "..", "site", "dist", "client", "assets")));
-
-// Frontend SPA static files
-const spaDist = path.join(__dirname, "..", "frontend", "dist");
-app.use(express.static(spaDist));
-
-// SPA catch-all for client-side routing
-app.get("/{*path}", (req, res) => {
-  res.sendFile(path.join(spaDist, "index.html"));
-});
+// Static files (landing page, SPA, assets) are now served directly by Vercel.
+// Express only handles /api/* routes.
 
 // -------------------- EXPORT --------------------
 
