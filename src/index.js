@@ -2670,17 +2670,24 @@ app.get("/{*path}", (req, res) => {
   res.sendFile(path.join(spaDist, "index.html"));
 });
 
+// -------------------- EXPORT --------------------
+
+export { app };
+
 // -------------------- START SERVER --------------------
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, "0.0.0.0", async () => {
-  console.log(`Server listening on http://0.0.0.0:${PORT}`);
+// Only start the server when this file is executed directly (not imported)
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, "0.0.0.0", async () => {
+    console.log(`Server listening on http://0.0.0.0:${PORT}`);
 
-  // Auto-migrate DB schema
-  await autoMigrate();
+    // Auto-migrate DB schema
+    await autoMigrate();
 
-  // Ensure Stripe products exist (test mode)
-  if (process.env.STRIPE_SECRET_KEY) {
-    await ensureStripeProducts();
-  }
-});
+    // Ensure Stripe products exist (test mode)
+    if (process.env.STRIPE_SECRET_KEY) {
+      await ensureStripeProducts();
+    }
+  });
+}
