@@ -2652,8 +2652,35 @@ app.use((err, req, res, next) => {
 });
 
 // -------------------- STATIC FILES & SPA --------------------
-// Static files (landing page, SPA, assets) are now served directly by Vercel.
-// Express only handles /api/* routes.
+// In Vercel serverless functions, process.cwd() resolves to the project root.
+// __dirname-relative paths don't work reliably.
+
+const cwd = process.cwd();
+
+// Landing page at root
+app.get("/", (req, res) => {
+  res.sendFile(path.join(cwd, "landing.html"));
+});
+
+// Landing page static assets (CSS, JS from TanStack Start build)
+// These are copied into frontend/dist/assets/ during build
+app.use("/assets", express.static(path.join(cwd, "frontend", "dist", "assets")));
+
+// Frontend SPA static files
+const spaDist = path.join(cwd, "frontend", "dist");
+app.use(express.static(spaDist));
+
+// SPA catch-all for client-side routing
+app.get("*", (req, res) => {
+  // Only serve index.html for non-API routes (API routes are handled by apiRouter)
+  if (!req.path.startsWith("/api")) {
+    res.sendFile(path.join(spaDist, "index.html"));
+  } else {
+    // This shouldn't happen since API routes are mounted first,
+    // but just in case
+    res.status(404).json({ error: "not_found" });
+  }
+});
 
 // -------------------- EXPORT --------------------
 
