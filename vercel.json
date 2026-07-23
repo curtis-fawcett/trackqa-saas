@@ -1,10 +1,6 @@
 {
-  "routes": [
-    { "src": "/api/(.*)", "dest": "/api/index.js" },
-    { "src": "/(.*\\.(js|css|png|svg|ico|json|woff2?))", "dest": "/frontend/dist/$1" },
-    { "src": "/assets/(.*)", "dest": "/frontend/dist/assets/$1" },
-    { "src": "/login|/register|/dashboard|/projects|/tickets|/settings|/organization|/notifications|/invite|/verify-email|/forgot-password|/reset-password", "dest": "/frontend/dist/index.html" },
-    { "src": "/", "dest": "/landing.html" },
-    { "src": "/(.*)", "dest": "/frontend/dist/index.html" }
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/index.js" },
+    { "source": "/(.*)", "destination": "/api/index.js" }
   ]
 }
