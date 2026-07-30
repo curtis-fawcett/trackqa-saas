@@ -2671,7 +2671,7 @@ const spaDist = path.join(cwd, "frontend", "dist");
 app.use(express.static(spaDist));
 
 // SPA catch-all for client-side routing
-app.get("*", (req, res) => {
+app.get("/{*splat}", (req, res) => {
   // Only serve index.html for non-API routes (API routes are handled by apiRouter)
   if (!req.path.startsWith("/api")) {
     res.sendFile(path.join(spaDist, "index.html"));
