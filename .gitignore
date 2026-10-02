@@ -4,9 +4,10 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# Environment variables
+# Environment variables — never commit real values
 .env
 .env.*
+!.env.example
 
 # Local database
 dev.db
