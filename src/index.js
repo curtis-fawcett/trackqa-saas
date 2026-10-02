@@ -381,6 +381,11 @@ apiRouter.get("/", (req, res) => {
   res.send("TrackQA API is running ✅");
 });
 
+// Lightweight liveness probe (no DB round-trip): GET /api/health
+apiRouter.get("/health", (req, res) => {
+  res.json({ ok: true, service: "trackqa-api" });
+});
+
 apiRouter.get("/health/db", async (req, res) => {
   try {
     await prisma.$queryRaw`SELECT 1`;
@@ -2684,7 +2689,21 @@ app.get("/{*splat}", (req, res) => {
 
 // -------------------- EXPORT --------------------
 
+// Named export: used by `api/index.js`, the serverless function that serves
+// every /api/* route (see vercel.json rewrites).
 export { app };
+
+// Default export: Vercel's zero-config Express builder loads this module
+// directly as its own function entry (builds.json -> @vercel/express with
+// src = package.json "main" = src/index.js) and refuses to start unless the
+// module has a default export:
+//   Invalid export found in module "/var/task/src/index.js".
+//   The default export must be a function or server.
+// Because of that the function exited with status 1 on every request to "/",
+// which surfaced as FUNCTION_INVOCATION_FAILED (HTTP 500) on the site root.
+// An Express app is itself a (req, res) function, so exporting it as default
+// satisfies that launcher and lets "/" reach the landing-page route below.
+export default app;
 
 // -------------------- START SERVER --------------------
 
