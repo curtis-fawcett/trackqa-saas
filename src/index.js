@@ -2378,18 +2378,34 @@ apiRouter.get(
         ...(unread === "true" ? { read: false } : unread === "false" ? { read: true } : {}),
       };
 
-      const [total, notifications] = await Promise.all([
+      const [total, rows] = await Promise.all([
         prisma.notification.count({ where }),
         prisma.notification.findMany({
           where,
           orderBy: { createdAt: "desc" },
           skip,
           take: pageSize,
-          include: {
-            ticket: { select: { id: true, title: true } },
-          },
         }),
       ]);
+
+      // Notification.ticketId is a plain column, not a Prisma relation (the
+      // schema has no ticket relation on Notification), so `include: { ticket }`
+      // throws PrismaClientValidationError. Resolve the tickets for this page in
+      // one extra query and shape them into the `ticket` field the API contract
+      // (and the frontend's Notification type) already declares.
+      const ticketIds = [...new Set(rows.map((n) => n.ticketId).filter(Boolean))];
+      const tickets = ticketIds.length
+        ? await prisma.ticket.findMany({
+            where: { id: { in: ticketIds } },
+            select: { id: true, title: true },
+          })
+        : [];
+      const ticketsById = new Map(tickets.map((t) => [t.id, t]));
+
+      const notifications = rows.map((n) => ({
+        ...n,
+        ticket: n.ticketId ? ticketsById.get(n.ticketId) || null : null,
+      }));
 
       res.json({
         page,
