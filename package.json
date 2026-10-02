@@ -6,7 +6,7 @@
   "main": "src/index.js",
   "scripts": {
     "dev": "nodemon src/index.js",
-    "postinstall": "prisma generate"
+    "postinstall": "node scripts/copy-landing.mjs && prisma generate"
   },
   "keywords": [],
   "author": "",
