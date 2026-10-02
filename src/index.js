@@ -11,6 +11,7 @@ import jwt from "jsonwebtoken";
 import { z } from "zod";
 import crypto from "crypto";
 import path from "path";
+import fs from "fs";
 import { fileURLToPath } from "url";
 
 import {
@@ -379,6 +380,11 @@ app.use(
 
 apiRouter.get("/", (req, res) => {
   res.send("TrackQA API is running ✅");
+});
+
+// Lightweight liveness probe (no DB round-trip): GET /api/health
+apiRouter.get("/health", (req, res) => {
+  res.json({ ok: true, service: "trackqa-api" });
 });
 
 apiRouter.get("/health/db", async (req, res) => {
@@ -2657,34 +2663,112 @@ app.use((err, req, res, next) => {
 
 const cwd = process.cwd();
 
+// Landing page at root. scripts/copy-landing.mjs copies landing.html next to
+// the SPA bundle at install time, because frontend/dist is the location we have
+// proven ends up inside the deployed function bundle; the repo-root copy stays
+// as a fallback for local runs.
+const spaDist = path.join(cwd, "frontend", "dist");
+const spaIndex = path.join(spaDist, "index.html");
+const landingFile =
+  [path.join(spaDist, "landing.html"), path.join(cwd, "landing.html")].find((candidate) =>
+    fs.existsSync(candidate)
+  ) || path.join(spaDist, "landing.html");
+
+// res.sendFile() reports a missing or unreadable file through its callback.
+// Called without one, Express forwards the error to the router and nothing
+// after this point handles it (the error middleware above is registered
+// earlier in the stack), so the serverless invocation dies with
+// FUNCTION_INVOCATION_FAILED instead of returning a response. Always pass a
+// callback, always answer the client.
+function sendFileSafe(res, filePath, { label, fallbackPath = null, onFail }) {
+  if (!filePath) return onFail(res);
+
+  res.sendFile(filePath, (err) => {
+    if (!err) return; // sendFile already completed the response
+
+    console.error(`[static] ${label}: cannot send ${filePath}: ${err.code || err.message}`);
+
+    if (res.headersSent) return res.end();
+
+    if (fallbackPath && fallbackPath !== filePath) {
+      return sendFileSafe(res, fallbackPath, { label: `${label} (fallback)`, onFail });
+    }
+
+    return onFail(res);
+  });
+}
+
 // Landing page at root
 app.get("/", (req, res) => {
-  res.sendFile(path.join(cwd, "landing.html"));
+  sendFileSafe(res, landingFile, {
+    label: "GET /",
+    fallbackPath: fs.existsSync(spaIndex) ? spaIndex : null,
+    onFail: (r) => r.status(404).type("text/plain").send("TrackQA landing page unavailable."),
+  });
 });
 
 // Landing page static assets (CSS, JS from TanStack Start build)
 // These are copied into frontend/dist/assets/ during build
-app.use("/assets", express.static(path.join(cwd, "frontend", "dist", "assets")));
+app.use("/assets", express.static(path.join(spaDist, "assets")));
 
 // Frontend SPA static files
-const spaDist = path.join(cwd, "frontend", "dist");
 app.use(express.static(spaDist));
 
 // SPA catch-all for client-side routing
 app.get("/{*splat}", (req, res) => {
   // Only serve index.html for non-API routes (API routes are handled by apiRouter)
-  if (!req.path.startsWith("/api")) {
-    res.sendFile(path.join(spaDist, "index.html"));
-  } else {
+  if (req.path.startsWith("/api")) {
     // This shouldn't happen since API routes are mounted first,
     // but just in case
-    res.status(404).json({ error: "not_found" });
+    return res.status(404).json({ error: "not_found" });
   }
+
+  sendFileSafe(res, spaIndex, {
+    label: `GET ${req.path}`,
+    onFail: (r) =>
+      r.status(404).json({ error: "not_found", message: "Frontend bundle unavailable." }),
+  });
+});
+
+// -------------------- FINAL ERROR HANDLER --------------------
+// Must stay registered AFTER the static/SPA routes above: an error raised in a
+// later-registered layer never travels backwards to the handler that sits with
+// the API routes, so without this one a bad path or a failed sendFile escapes
+// Express and crashes the invocation (FUNCTION_INVOCATION_FAILED).
+app.use((err, req, res, next) => {
+  console.error("[final-error-handler]", err);
+
+  if (res.headersSent) return next(err);
+
+  const status = err?.statusCode || err?.status || 500;
+
+  if (err?.name === "ZodError") {
+    return res.status(400).json({ error: "validation_error", details: err.issues });
+  }
+
+  res.status(status).json({
+    error: "internal_server_error",
+    message: process.env.NODE_ENV === "production" ? undefined : String(err),
+  });
 });
 
 // -------------------- EXPORT --------------------
 
+// Named export: used by api/index.js, the serverless function that serves every
+// /api/* route (see vercel.json rewrites).
 export { app };
+
+// Default export: Vercel zero-config detects this repo as an Express project
+// (package.json "main" = src/index.js) and builds a *second* function from this
+// module for the routes the rewrites do not claim, "/" included. Its launcher
+// refuses to start unless the module has a default export:
+//   Invalid export found in module "/var/task/src/index.js".
+//   The default export must be a function or server.
+// That function exited with status 1 on every request, which is what surfaced
+// as FUNCTION_INVOCATION_FAILED (HTTP 500) on the site root while /api/*,
+// /login and /assets/* kept working. An Express app is itself a (req, res)
+// function, so exporting it as default satisfies the launcher.
+export default app;
 
 // -------------------- START SERVER --------------------
 
