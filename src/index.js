@@ -15,7 +15,6 @@ import fs from "fs";
 import { fileURLToPath } from "url";
 
 import {
-  ensureStripeProducts,
   getOrCreateCustomer,
   createCheckoutSession,
   createPortalSession,
@@ -342,6 +341,137 @@ app.set("trust proxy", 1);
 const apiRouter = express.Router();
 
 app.use(helmet());
+// ─── Stripe Webhook ──────────────────────────────────────────────────────────
+// Registered here, on `app`, BEFORE app.use(express.json()) and BEFORE
+// app.use("/api", apiRouter) — both orderings are load-bearing:
+//
+//  * Raw body: Stripe signs the exact bytes it sends. The global express.json()
+//    parser consumes the stream and re-serializes it, and a re-serialized body
+//    can never match the signature. express.raw() below is scoped to this one
+//    path, so every other /api route keeps its parsed-JSON behaviour.
+//  * Reachability: apiRouter ends with a catch-all 404. While this route was
+//    registered after `app.use("/api", apiRouter)`, that catch-all answered
+//    first and every Stripe delivery got
+//    `404 {"error":"not_found","path":"/billing/webhook"}` — a paying customer
+//    was charged and stayed on Free. Do not move this route below the
+//    `app.use("/api", apiRouter)` mount.
+app.post("/api/billing/webhook", express.raw({ type: "application/json" }), async (req, res) => {
+  let event;
+  try {
+    const signature = req.headers["stripe-signature"];
+    event = verifyWebhook(req.body, signature);
+  } catch (err) {
+    console.error("[Webhook] Signature verification failed:", err.message);
+    return res.status(400).json({ error: "webhook signature verification failed" });
+  }
+
+  try {
+    switch (event.type) {
+      case "checkout.session.completed": {
+        const session = event.data.object;
+        // Stripe ids are plain strings unless the event was expanded.
+        const customerId =
+          typeof session.customer === "string" ? session.customer : session.customer?.id || null;
+        const subscriptionId =
+          typeof session.subscription === "string"
+            ? session.subscription
+            : session.subscription?.id || null;
+
+        // One-time payments (mode: "payment") grant NOTHING today. Billing runs
+        // on subscription mode (createCheckoutSession() in src/stripe.js) and no
+        // entitlement maps to a one-off purchase, so this is a deliberate no-op —
+        // but it is logged loudly rather than silently. The previous code fell
+        // through to `session.line_items`, which is NOT present on a real event
+        // (it is expandable and unexpanded), so `planFromPriceId(null)` returned
+        // "free" and a completed checkout could write plan: "free".
+        if (!subscriptionId) {
+          console.error(
+            `[Webhook] checkout.session.completed with no subscription (mode=${session.mode}, id=${session.id}) — no plan granted`
+          );
+          break;
+        }
+
+        // The subscription is the dependable source of the purchased price id:
+        // the event does not expand line items.
+        const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+        const priceId = subscription.items?.data?.[0]?.price?.id || null;
+        const plan = planFromPriceId(priceId);
+
+        if (plan === "free") {
+          console.error(
+            `[Webhook] subscription ${subscriptionId} (customer ${customerId}) price ${priceId} matches no configured plan — no plan granted`
+          );
+          break;
+        }
+
+        // Find the user this subscription belongs to, by Stripe customer id.
+        const user = customerId
+          ? await prisma.user.findFirst({ where: { stripeCustomerId: customerId } })
+          : null;
+
+        if (user) {
+          await prisma.user.update({
+            where: { id: user.id },
+            data: { plan },
+          });
+          console.log(`[Webhook] Upgraded user ${user.email} to plan: ${plan}`);
+        } else {
+          // Fall back to the userId stamped on the session / subscription.
+          const userIdFromMeta = session.metadata?.userId || subscription.metadata?.userId;
+          if (userIdFromMeta) {
+            await prisma.user.update({
+              where: { id: userIdFromMeta },
+              data: { plan, stripeCustomerId: customerId },
+            });
+            console.log(`[Webhook] Upgraded user ${userIdFromMeta} to plan: ${plan} (via metadata)`);
+          } else {
+            console.error(
+              `[Webhook] no user found for customer ${customerId} — plan "${plan}" NOT granted`
+            );
+          }
+        }
+        break;
+      }
+
+      case "customer.subscription.deleted": {
+        const subscription = event.data.object;
+        const customerId =
+          typeof subscription.customer === "string"
+            ? subscription.customer
+            : subscription.customer?.id || null;
+
+        if (!customerId) {
+          console.error(
+            "[Webhook] customer.subscription.deleted without a customer id — no downgrade applied"
+          );
+          break;
+        }
+
+        const user = await prisma.user.findFirst({
+          where: { stripeCustomerId: customerId },
+        });
+
+        if (user) {
+          await prisma.user.update({
+            where: { id: user.id },
+            data: { plan: "free" },
+          });
+          console.log(`[Webhook] Downgraded user ${user.email} to free (subscription cancelled)`);
+        }
+        break;
+      }
+
+      default:
+        console.log(`[Webhook] Unhandled event: ${event.type}`);
+    }
+
+    res.json({ received: true });
+  } catch (err) {
+    console.error("[Webhook] Handler error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 app.use(express.json());
 
 // Rate limit (nice protection for auth endpoints when public on the internet)
@@ -2489,17 +2619,30 @@ apiRouter.get("/billing/plan", requireAuth, async (req, res) => {
   }
 });
 
+// The only plan keys a client may send, and the env var each one maps to.
+// The request never carries a Stripe price id: an arbitrary caller-supplied
+// price id used to be forwarded straight to Stripe, so a bogus value surfaced
+// as a 500 "No such price" instead of a clean 400. Unknown input now stops here
+// and never reaches Stripe.
+const PLAN_PRICE_ENV = {
+  pro: "STRIPE_PRO_PRICE_ID",
+  enterprise: "STRIPE_ENTERPRISE_PRICE_ID",
+};
+function resolvePlanPriceId(planKey) {
+  if (typeof planKey !== "string") return null;
+  if (!Object.prototype.hasOwnProperty.call(PLAN_PRICE_ENV, planKey)) return null;
+  return process.env[PLAN_PRICE_ENV[planKey]] || null;
+}
+
 // POST /api/billing/create-checkout-session — creates Stripe checkout session
 apiRouter.post("/billing/create-checkout-session", requireAuth, async (req, res) => {
   try {
-    let { priceId } = req.body;
-    if (!priceId) return res.status(400).json({ error: "priceId is required" });
+    if (!req.body?.priceId) return res.status(400).json({ error: "priceId is required" });
 
-    // Map plan names to price IDs
-    if (priceId === "pro") priceId = process.env.STRIPE_PRO_PRICE_ID;
-    if (priceId === "enterprise") priceId = process.env.STRIPE_ENTERPRISE_PRICE_ID;
+    // Map the plan key ("pro"/"enterprise") to the server-side price id.
+    const priceId = resolvePlanPriceId(req.body.priceId);
 
-    if (!priceId || priceId === "pro" || priceId === "enterprise") {
+    if (!priceId) {
       return res.status(400).json({ error: "Invalid plan — Stripe products may not be configured yet. Please try again." });
     }
 
@@ -2571,92 +2714,6 @@ apiRouter.use((req, res) => {
 });
 
 app.use("/api", apiRouter);
-
-// ─── Stripe Webhook (raw body required — mounted directly on app) ───
-app.post("/api/billing/webhook", express.raw({ type: "application/json" }), async (req, res) => {
-  let event;
-  try {
-    const signature = req.headers["stripe-signature"];
-    event = verifyWebhook(req.body, signature);
-  } catch (err) {
-    console.error("[Webhook] Signature verification failed:", err.message);
-    return res.status(400).json({ error: "webhook signature verification failed" });
-  }
-
-  try {
-    switch (event.type) {
-      case "checkout.session.completed": {
-        const session = event.data.object;
-        const customerId = session.customer;
-        const subscriptionId = session.subscription;
-
-        // Get the price ID from the subscription
-        let priceId = null;
-        if (subscriptionId) {
-          const subscription = await stripe.subscriptions.retrieve(subscriptionId);
-          priceId = subscription.items.data[0]?.price?.id;
-        } else if (session.line_items) {
-          const lineItems = await stripe.checkout.sessions.listLineItems(session.id, { limit: 1 });
-          priceId = lineItems.data[0]?.price?.id;
-        }
-
-        const plan = planFromPriceId(priceId);
-
-        // Find user by stripeCustomerId
-        const user = await prisma.user.findFirst({
-          where: { stripeCustomerId: customerId },
-        });
-
-        if (user) {
-          await prisma.user.update({
-            where: { id: user.id },
-            data: { plan },
-          });
-          console.log(`[Webhook] Upgraded user ${user.email} to plan: ${plan}`);
-        } else {
-          // Try metadata on subscription
-          const userIdFromMeta = session.metadata?.userId;
-          if (userIdFromMeta) {
-            await prisma.user.update({
-              where: { id: userIdFromMeta },
-              data: { plan, stripeCustomerId: customerId },
-            });
-            console.log(`[Webhook] Upgraded user ${userIdFromMeta} to plan: ${plan} (via metadata)`);
-          } else {
-            console.log(`[Webhook] No user found for customer: ${customerId}`);
-          }
-        }
-        break;
-      }
-
-      case "customer.subscription.deleted": {
-        const subscription = event.data.object;
-        const customerId = subscription.customer;
-
-        const user = await prisma.user.findFirst({
-          where: { stripeCustomerId: customerId },
-        });
-
-        if (user) {
-          await prisma.user.update({
-            where: { id: user.id },
-            data: { plan: "free" },
-          });
-          console.log(`[Webhook] Downgraded user ${user.email} to free (subscription cancelled)`);
-        }
-        break;
-      }
-
-      default:
-        console.log(`[Webhook] Unhandled event: ${event.type}`);
-    }
-
-    res.json({ received: true });
-  } catch (err) {
-    console.error("[Webhook] Handler error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
 
 app.use((err, req, res, next) => {
   console.error(err);
@@ -2797,9 +2854,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     // Auto-migrate DB schema
     await autoMigrate();
 
-    // Ensure Stripe products exist (test mode)
-    if (process.env.STRIPE_SECRET_KEY) {
-      await ensureStripeProducts();
-    }
+    // NOTE: ensureStripeProducts() used to run here. It creates live Stripe
+    // Products/Prices and rewrites process.cwd()/.env on every boot, so nothing
+    // in application code calls it any more (see the guard in src/stripe.js).
+    // Stripe products are set up deliberately, out of band — never on boot.
   });
 }
