@@ -183,15 +183,52 @@ export function planFromPriceId(priceId) {
   return "free";
 }
 
+const PLACEHOLDER_WEBHOOK_SECRET = "whsec_test_placeholder";
+
 /**
- * Verify Stripe webhook signature.
+ * Verify Stripe webhook signature. FAILS CLOSED.
+ *
+ * `stripe.webhooks.constructEvent` always runs. The only way to skip it is the
+ * deliberate, local-testing-only opt-out, which requires BOTH:
+ *
+ *     NODE_ENV !== "production"  AND  ALLOW_UNVERIFIED_WEBHOOKS === "1"
+ *
+ * A production runtime can never skip verification, not even with the flag set,
+ * and a missing or placeholder signing secret throws (→ HTTP 400 upstream)
+ * instead of accepting an unverified payload. An unverified webhook on this
+ * path can forge `checkout.session.completed` and grant a paid plan for free,
+ * so accepting one is never an acceptable fallback.
  */
 export function verifyWebhook(payload, signature) {
-  if (process.env.STRIPE_WEBHOOK_SECRET === "whsec_test_placeholder") {
-    console.warn("[Stripe] Webhook secret not configured — skipping signature verification");
+  const secret = process.env.STRIPE_WEBHOOK_SECRET;
+  const isProduction = process.env.NODE_ENV === "production";
+  const optOutRequested = process.env.ALLOW_UNVERIFIED_WEBHOOKS === "1";
+
+  if (optOutRequested && isProduction) {
+    throw new Error(
+      "ALLOW_UNVERIFIED_WEBHOOKS=1 is ignored because NODE_ENV=production — refusing to process an unverified webhook"
+    );
+  }
+
+  if (optOutRequested) {
+    console.warn(
+      "[Stripe] ALLOW_UNVERIFIED_WEBHOOKS=1 with NODE_ENV != production — SKIPPING signature verification. Local testing only; never set this in production."
+    );
     return JSON.parse(payload);
   }
-  return stripe.webhooks.constructEvent(payload, signature, process.env.STRIPE_WEBHOOK_SECRET);
+
+  if (!secret) {
+    throw new Error(
+      "STRIPE_WEBHOOK_SECRET is not set — refusing to process an unverified webhook. Set STRIPE_WEBHOOK_SECRET to the signing secret of the webhook endpoint registered in the Stripe dashboard (for local testing only, run with NODE_ENV != production and ALLOW_UNVERIFIED_WEBHOOKS=1)."
+    );
+  }
+  if (secret === PLACEHOLDER_WEBHOOK_SECRET) {
+    throw new Error(
+      `STRIPE_WEBHOOK_SECRET is still the placeholder "${PLACEHOLDER_WEBHOOK_SECRET}"${isProduction ? " in production" : ""} — refusing to process an unverified webhook. Set STRIPE_WEBHOOK_SECRET to the signing secret of the webhook endpoint registered in the Stripe dashboard.`
+    );
+  }
+
+  return stripe.webhooks.constructEvent(payload, signature, secret);
 }
 
 export { stripe, PRO_PRICE_ID, ENTERPRISE_PRICE_ID };
