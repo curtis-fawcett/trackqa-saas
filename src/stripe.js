@@ -12,6 +12,23 @@ const ENTERPRISE_PRICE_ID = process.env.STRIPE_ENTERPRISE_PRICE_ID;
  * Idempotent — looks up existing products by name before creating.
  */
 export async function ensureStripeProducts() {
+  // Hard-disabled. This function creates LIVE Stripe Products/Prices and
+  // rewrites process.cwd()/.env — a side effect that must never happen on boot,
+  // during a request, or in production. Nothing in the app calls it any more
+  // (it used to run in the app.listen() callback); running it has to be an
+  // explicit, deliberate act, and only ever against a test key.
+  if (process.env.STRIPE_BOOTSTRAP_PRODUCTS !== "1") {
+    console.warn(
+      "[Stripe] ensureStripeProducts() is disabled — set STRIPE_BOOTSTRAP_PRODUCTS=1 to run it deliberately (test mode only)"
+    );
+    return { proPriceId: PRO_PRICE_ID, enterprisePriceId: ENTERPRISE_PRICE_ID };
+  }
+  if (!String(process.env.STRIPE_SECRET_KEY || "").startsWith("sk_test_")) {
+    throw new Error(
+      "ensureStripeProducts() refuses to run: STRIPE_SECRET_KEY is not a test-mode key"
+    );
+  }
+
   try {
     // ── Pro Plan ──
     let proProduct;
